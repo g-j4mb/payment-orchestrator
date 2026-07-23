@@ -1,284 +1,221 @@
-# Payment Gateway - Multi-Gateway Payment Integration
+# Payment Orchestrator
 
-A production-grade Java Spring Boot platform that orchestrates payments across multiple payment providers through a unified, extensible API.  
+> A production-grade payment orchestration platform built with Java and Spring Boot that provides a unified API for integrating multiple payment providers.
 
----
+Payment Orchestrator abstracts provider-specific implementations behind a common interface, enabling applications to process payments through a consistent API without being tightly coupled to any single payment provider.
 
-## What?
-
-backend service that provides a unified interface for integrating multiple payment gateways such as Stripe, Adyen, and Checkout.com.
-
-It abstracts provider-specific implementations behind a common API, allowing applications to process payments without being tightly coupled to a specific payment provider.
+The project demonstrates enterprise software engineering practices including Clean Architecture, SOLID principles, gateway abstraction, idempotent payment processing, webhook handling, audit logging, and secure payment integrations.
 
 ---
 
-## Why?
+## Overview
 
-Most applications eventually need to support multiple payment providers for business, regional, or reliability reasons. Unfortunately, each gateway exposes different APIs, request formats, authentication mechanisms, and payment lifecycles.
+Modern applications often need to integrate with multiple payment providers for business, regional, cost, or reliability reasons. Each provider exposes different APIs, authentication mechanisms, payment workflows, and webhook formats, resulting in duplicated code and tightly coupled integrations.
 
-This project demonstrates how to build a maintainable and extensible payment integration layer using Clean Architecture and the Strategy pattern, making it easy to add or replace payment providers with minimal impact on business logic.
+Payment Orchestrator solves this problem by introducing a unified orchestration layer that decouples business logic from payment providers. New providers can be added or existing ones replaced with minimal changes to the application.
 
 ---
 
-
-
-## Who for?
+## Who Is This Project For?
 
 This project is intended for:
 
-- Backend developers learning payment integrations
-- Software architects designing payment platforms
-- Fintech engineers
-- Developers building e-commerce or SaaS applications
-- Recruiters and hiring managers evaluating Java and Spring Boot expertise
-
-
-
-# Payment API - Multi-Gateway Payment Integration
-
-A production-style payment processing service built with **Java 21**, **Spring Boot**, and **Clean Architecture**.
-
-This project demonstrates how to integrate multiple payment providers through a unified API while following enterprise software engineering practices such as dependency inversion, idempotency, webhook processing, audit logging, and secure payment handling.
-
-The goal of this project is to showcase payment integration architecture suitable for fintech companies and enterprise payment platforms.
+* Backend developers learning payment integrations
+* Software architects designing payment platforms
+* Fintech engineers
+* Developers building e-commerce and SaaS applications
+* Recruiters and hiring managers evaluating Java and Spring Boot expertise
 
 ---
 
+## Architecture
 
+```text
+                        Client Application
+                                │
+                                ▼
+                         REST Controller
+                                │
+                                ▼
+                     Payment Orchestrator
+                                │
+                ┌───────────────┼────────────────┐
+                ▼               ▼                ▼
+         Stripe Adapter   Adyen Adapter   Checkout Adapter
+                │               │                │
+                └───────────────┴────────────────┘
+                                │
+                                ▼
+                       Payment Providers
+```
 
-## Features
-
-- Unified Payment API
-- Multi-payment gateway support
-- Authorization and Capture
-- Purchase (Sale)
-- Refunds
-- Payment Status
-- Webhook Processing
-- Idempotent Requests
-- Audit Logging
-- Exception Handling
-- OpenAPI / Swagger Documentation
-- Docker Support
-- Integration Tests
-
----
-
-
-
-## Supported Payment Gateways
-
-
-| Gateway      | Status |
-| ------------ | ------ |
-| Stripe       | ✅      |
-| Adyen        | 🚧     |
-| Checkout.com | 🚧     |
-
-
-The architecture allows adding additional providers without changing the business layer.
+The application follows the **Strategy Pattern**, **Adapter Pattern**, and **Dependency Inversion Principle**, allowing payment providers to be added without modifying the business layer.
 
 ---
 
+## Key Highlights
 
+* Unified Payment API
+* Multi-provider architecture
+* Provider abstraction
+* Authorization & Capture
+* Purchase (Sale)
+* Refunds
+* Payment Status
+* Webhook Processing
+* Idempotent Requests
+* Audit Logging
+* OpenAPI / Swagger Documentation
+* Docker Support
+* Integration Tests
+
+---
+
+## Supported Payment Providers
+
+| Provider     | Status |
+| ------------ | :----: |
+| Stripe       |    ✅   |
+| Adyen        |   🚧   |
+| Checkout.com |   🚧   |
+
+The architecture is designed to support additional providers with minimal implementation effort.
+
+---
 
 ## Technology Stack
 
-
-
 ### Backend
 
-- Java 21
-- Spring Boot 3
-- Spring Web
-- Spring Validation
-- Spring Security
-- Spring Data JPA
-
-
+* Java 21
+* Spring Boot 3
+* Spring Web
+* Spring Validation
+* Spring Security
+* Spring Data JPA
 
 ### Database
 
-- PostgreSQL
-
-
+* PostgreSQL
 
 ### Documentation
 
-- OpenAPI 3
-- Swagger UI
+* OpenAPI 3
+* Swagger UI
 
+### Build & Deployment
 
-
-### Build
-
-- Maven
-
-
-
-### Containerization
-
-- Docker
-- Docker Compose
-
-
+* Maven
+* Docker
+* Docker Compose
 
 ### Testing
 
-- JUnit 5
-- Mockito
-- Testcontainers
+* JUnit 5
+* Mockito
+* Testcontainers
 
 ---
 
+## REST API
 
+### Create Payment
 
-# Architecture
-
-```text
-                    Client
-                      │
-                      ▼
-              REST Controller
-                      │
-                      ▼
-              Payment Service
-                      │
-          ┌───────────┼────────────┐
-          ▼           ▼            ▼
-     Stripe      Adyen      Checkout.com
-       Adapter     Adapter      Adapter
-          │           │            │
-          └───────────┴────────────┘
-                      │
-                 Payment Gateway
-```
-
-The application follows the **Strategy Pattern** and **Dependency Inversion Principle**, making it easy to plug in new payment providers.
-
----
-
-
-
-# REST API
-
-
-
-## Create Payment
-
-```
+```http
 POST /api/v1/payments
 ```
 
+### Capture Payment
 
-
-## Capture Payment
-
-```
+```http
 POST /api/v1/payments/{paymentId}/capture
 ```
 
+### Refund Payment
 
-
-## Refund Payment
-
-```
+```http
 POST /api/v1/payments/{paymentId}/refund
 ```
 
+### Void Payment
 
-
-## Void Payment
-
-```
+```http
 POST /api/v1/payments/{paymentId}/void
 ```
 
+### Get Payment Status
 
-
-## Get Payment Status
-
-```
+```http
 GET /api/v1/payments/{paymentId}
 ```
 
 ---
 
+## Project Structure
 
-
-# Project Structure
-
-```
+```text
 src
- ├── controller
- ├── service
- ├── gateway
- │     ├── stripe
- │     ├── adyen
- │     └── checkout
- ├── dto
- ├── entity
- ├── repository
- ├── exception
- ├── configuration
- └── webhook
+├── controller
+├── service
+├── gateway
+│   ├── stripe
+│   ├── adyen
+│   └── checkout
+├── dto
+├── entity
+├── repository
+├── configuration
+├── exception
+└── webhook
 ```
 
 ---
 
+## Design Principles
 
-
-# Design Principles
-
-- SOLID
-- Clean Architecture
-- Strategy Pattern
-- Adapter Pattern
-- Dependency Injection
-- RESTful API Design
-- Domain-Driven Design (DDD) concepts
+* Clean Architecture
+* SOLID Principles
+* Strategy Pattern
+* Adapter Pattern
+* Dependency Injection
+* RESTful API Design
+* Domain-Driven Design (DDD)
 
 ---
 
+## Security
 
-
-# Security
-
-- HTTPS
-- API Key Authentication
-- Secure Secret Management
-- Idempotency Keys
-- Webhook Signature Verification
-- Input Validation
-- Sensitive Data Masking
+* HTTPS
+* API Key Authentication
+* Secure Secret Management
+* Idempotency Keys
+* Webhook Signature Verification
+* Input Validation
+* Sensitive Data Masking
 
 ---
 
+## Roadmap
 
-
-# Roadmap
-
-- [x] Stripe Integration
-- [ ] Adyen Integration
-- [ ] Checkout.com Integration
-- [ ] Payment Dashboard
-- [ ] Customer Management
-- [ ] Subscription Payments
-- [ ] Apple Pay
-- [ ] Google Pay
-- [ ] Metrics & Monitoring
-- [ ] CI/CD Pipeline
+* [x] Stripe Integration
+* [ ] Adyen Integration
+* [ ] Checkout.com Integration
+* [ ] Payment Dashboard
+* [ ] Customer Management
+* [ ] Subscription Payments
+* [ ] Apple Pay
+* [ ] Google Pay
+* [ ] Metrics & Monitoring
+* [ ] CI/CD Pipeline
 
 ---
 
-
-
-# Running the Project
+## Running the Project
 
 ```bash
 git clone https://github.com/g-j4mb/payment-orchestrator.git
 
-cd payment-api
+cd payment-orchestrator
 
 docker compose up -d
 
@@ -287,47 +224,26 @@ docker compose up -d
 
 Swagger UI
 
-```
+```text
 http://localhost:8080/swagger-ui.html
 ```
 
 ---
 
+## Future Enhancements
 
-
-# Why This Project?
-
-This repository demonstrates enterprise payment integration techniques used in modern fintech systems, including:
-
-- Gateway abstraction
-- Multi-provider architecture
-- Payment lifecycle management
-- Secure webhook handling
-- Transaction auditability
-- Extensible payment provider integrations
-
-It is intended as a portfolio project for backend engineering, payment systems, and solution architecture roles.
+* Kafka Event Streaming
+* Distributed Tracing
+* Redis Caching
+* Resilience4j Circuit Breakers
+* Event Sourcing
+* Multi-tenancy
+* Payment Reconciliation
+* PCI DSS Best Practices
+* AWS Deployment
 
 ---
 
+## License
 
-
-# Future Enhancements
-
-- Async processing with Kafka
-- Distributed tracing
-- Redis caching
-- Resilience4j circuit breakers
-- Event sourcing
-- Multi-tenant support
-- Payment reconciliation
-- PCI DSS best practices
-- Cloud deployment (AWS)
-
----
-
-
-
-# License
-
-MIT License
+This project is licensed under the MIT License.
