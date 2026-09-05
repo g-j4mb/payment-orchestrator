@@ -1,0 +1,52 @@
+spring:
+  application:
+    name: payment-orchestrator
+  # Defaults match docker-compose.yml, so the app boots without a shell that has sourced .env.
+  datasource:
+    url: ${SPRING_DATASOURCE_URL:jdbc:postgresql://localhost:5433/payment_orchestrator}
+    username: ${SPRING_DATASOURCE_USERNAME:payment}
+    password: ${SPRING_DATASOURCE_PASSWORD:payment}
+    hikari:
+      # Caps how long a statement waits for a row lock. Capture/refund/void hold a SELECT ... FOR
+      # UPDATE lock across the provider call, so without this a hung provider would pin every
+      # waiter — and the connections they occupy — until its own timeout expires.
+      #
+      # Pick a value above normal provider latency but well below the gateway read timeout: long
+      # enough that a legitimately slow call is waited out and the waiter gets a correct answer,
+      # short enough that a hang sheds load instead of exhausting the pool. Waiters that do time out
+      # surface as 409, which is a retry signal.
+      connection-init-sql: "SET lock_timeout = '${DB_LOCK_TIMEOUT:5s}'"
+  docker:
+    compose:
+      enabled: true
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    open-in-view: false
+
+  flyway:
+    enabled: true
+
+# Provider credentials come from the environment; never commit them. See .env.
+payments:
+  gateway:
+    mock:
+      # Swaps every provider adapter for an in-memory mock, so the full flow runs without
+      # credentials or network. Refuses to start under the prod profile. Never enable in production.
+      enabled: ${PAYMENTS_MOCK_GATEWAYS:false}
+  stripe:
+    api-key: ${STRIPE_API_KEY:}
+    webhook-secret: ${STRIPE_WEBHOOK_SECRET:}
+    base-url: ${STRIPE_BASE_URL:https://api.stripe.com}
+    connect-timeout: 5s
+    read-timeout: 30s
+
+springdoc:
+  swagger-ui:
+    path: /swagger-ui.html
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info

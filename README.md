@@ -24,7 +24,6 @@ This project is intended for:
 * Software architects designing payment platforms
 * Fintech engineers
 * Developers building e-commerce and SaaS applications
-* Recruiters and hiring managers evaluating Java and Spring Boot expertise
 
 ---
 
@@ -75,9 +74,13 @@ The application follows the **Strategy Pattern**, **Adapter Pattern**, and **Dep
 
 | Provider     | Status |
 | ------------ | :----: |
-| Stripe       |    ✅   |
+| Stripe       |   🚧   |
 | Adyen        |   🚧   |
 | Checkout.com |   🚧   |
+
+All three adapters are wired and resolvable through the gateway port; their provider calls are not
+implemented yet. Having all three in place from the start is deliberate — it keeps the port designed
+against several providers rather than shaped around whichever one landed first.
 
 The architecture is designed to support additional providers with minimal implementation effort.
 
@@ -153,33 +156,59 @@ GET /api/v1/payments/{paymentId}
 
 ## Project Structure
 
+The code is organised by **bounded context** first and by technical layer second, so a feature lives
+in one place instead of being scattered across `controller/`, `service/`, and `repository/` folders.
+
 ```text
-src
-├── controller
-├── service
-├── gateway
-│   ├── stripe
-│   ├── adyen
-│   └── checkout
-├── dto
-├── entity
-├── repository
-├── configuration
-├── exception
-└── webhook
+com.j4mb.payment_orchestrator
+├── common/                          Shared kernel — DomainEvent, AggregateRoot (framework-free)
+├── config/                          Composition root — OpenAPI, Clock, domain-service beans
+└── payments/                        Bounded context
+    ├── domain/                      Tactical DDD — no Spring, no JPA, no HTTP
+    │   ├── model/                   Payment (aggregate root), PaymentId
+    │   ├── vo/                      Money, PaymentStatus, ProviderType, ProviderReference,
+    │   │                            IdempotencyKey
+    │   ├── event/                   PaymentAuthorized / Captured / Refunded / Voided
+    │   ├── service/                 RefundPolicy
+    │   └── exception/               Invariant violations
+    ├── application/                 Use cases and the ports they talk through
+    │   ├── port/in/                 AuthorizePayment, CapturePayment, RefundPayment,
+    │   │                            VoidPayment, GetPaymentStatus, ProcessWebhook
+    │   ├── port/out/                PaymentGatewayPort, PaymentRepositoryPort,
+    │   │                            IdempotencyStorePort, DomainEventPublisherPort
+    │   ├── command/                 Input records per use case
+    │   ├── dto/                     PaymentResult (read-only projection)
+    │   ├── service/                 Use-case implementations + PaymentGatewayResolver
+    │   └── exception/               Application-level failures
+    └── infrastructure/              Adapters — depend inward only
+        └── adapter/
+            ├── in/web/              PaymentController, WebhookController, DTOs, mapper
+            └── out/
+                ├── persistence/     JPA entities, repositories, PaymentPersistenceAdapter
+                │   └── idempotency/ IdempotencyStoreAdapter
+                ├── gateway/         stripe/ · adyen/ · checkout/ — one adapter per provider
+                └── audit/           Domain-event listener writing the append-only audit log
 ```
+
+**The dependency rule:** `domain` depends on nothing, `application` depends only on `domain`, and
+`infrastructure` depends on both — never the reverse. `ArchitectureTest` fails the build if that is
+violated, which is what makes a single Maven module safe here.
+
+**Adding a provider** means adding one enum constant and one `PaymentGatewayPort` implementation.
+No domain or application code changes.
 
 ---
 
 ## Design Principles
 
-* Clean Architecture
+* Strategic DDD — bounded contexts as top-level packages
+* Tactical DDD — aggregate root, value objects, domain events, domain services
+* Hexagonal Architecture (Ports & Adapters)
+* Clean Architecture dependency rule, enforced by ArchUnit
 * SOLID Principles
-* Strategy Pattern
-* Adapter Pattern
-* Dependency Injection
+* Strategy Pattern (provider selection) & Adapter Pattern (provider integration)
+* Dependency Inversion — the application defines ports, infrastructure satisfies them
 * RESTful API Design
-* Domain-Driven Design (DDD)
 
 ---
 
@@ -197,7 +226,8 @@ src
 
 ## Roadmap
 
-* [x] Stripe Integration
+* [x] Hexagonal / DDD project structure with enforced boundaries
+* [ ] Stripe Integration
 * [ ] Adyen Integration
 * [ ] Checkout.com Integration
 * [ ] Payment Dashboard
