@@ -66,9 +66,9 @@ public class RefundPaymentService implements RefundPaymentUseCase {
             payment = requireForUpdate(command.paymentId());
             Money amount = command.amount().orElseGet(payment::refundableAmount);
 
-            // Two checks, two concerns: the aggregate's own invariants (state and balance), then any
-            // policy layered on top. Both run before the provider is asked to return money.
-            payment.ensureRefundable(amount);
+            // Runs before the provider is asked to return money: a refund the policy would reject
+            // must never reach the gateway. RefundPolicy itself enforces the aggregate's own
+            // invariants before layering anything further on top, so this one call covers both.
             refundPolicy.validate(payment, amount);
 
             PaymentGatewayPort gateway = gatewayResolver.resolve(payment.provider());

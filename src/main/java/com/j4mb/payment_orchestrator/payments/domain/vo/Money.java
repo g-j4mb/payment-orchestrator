@@ -26,6 +26,7 @@ public record Money(BigDecimal amount, Currency currency) implements Comparable<
             throw new IllegalArgumentException(
                     "%s allows at most %d decimal places, got %s".formatted(currency, minorUnits, amount));
         }
+
         amount = amount.setScale(minorUnits, RoundingMode.UNNECESSARY);
     }
 
