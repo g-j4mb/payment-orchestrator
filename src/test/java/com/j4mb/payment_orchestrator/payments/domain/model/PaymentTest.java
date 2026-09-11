@@ -1,0 +1,345 @@
+package com.j4mb.payment_orchestrator.payments.domain.model;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+
+import com.j4mb.payment_orchestrator.payments.domain.event.PaymentAuthorized;
+import com.j4mb.payment_orchestrator.payments.domain.event.PaymentCaptured;
+import com.j4mb.payment_orchestrator.payments.domain.event.PaymentFailed;
+import com.j4mb.payment_orchestrator.payments.domain.event.PaymentRefunded;
+import com.j4mb.payment_orchestrator.payments.domain.event.PaymentVoided;
+import com.j4mb.payment_orchestrator.payments.domain.exception.InvalidCaptureAmountException;
+import com.j4mb.payment_orchestrator.payments.domain.exception.InvalidPaymentStateTransitionException;
+import com.j4mb.payment_orchestrator.payments.domain.exception.InvalidRefundAmountException;
+import com.j4mb.payment_orchestrator.payments.domain.vo.IdempotencyKey;
+import com.j4mb.payment_orchestrator.payments.domain.vo.Money;
+import com.j4mb.payment_orchestrator.payments.domain.vo.PaymentStatus;
+import com.j4mb.payment_orchestrator.payments.domain.vo.ProviderReference;
+import com.j4mb.payment_orchestrator.payments.domain.vo.ProviderType;
+import java.math.BigDecimal;
+import java.time.Instant;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Nested;
+import org.junit.jupiter.api.Test;
+
+class PaymentTest {
+
+    private static final Instant NOW = Instant.parse("2026-01-01T00:00:00Z");
+    private static final Instant LATER = NOW.plusSeconds(60);
+
+    private static Money usd(String amount) {
+        return Money.of(new BigDecimal(amount), "USD");
+    }
+
+    private static IdempotencyKey newKey() {
+        return new IdempotencyKey("key-" + System.nanoTime());
+    }
+
+    private static Payment newPayment(Money amount) {
+        return Payment.initiate(ProviderType.STRIPE, amount, newKey(), NOW);
+    }
+
+    @Nested
+    class Initiate {
+
+        @Test
+        void rejectsZeroAmount() {
+            assertThatThrownBy(() -> newPayment(usd("0.00"))).isInstanceOf(IllegalArgumentException.class);
+        }
+
+        @Test
+        void startsCreatedWithNoCapturedOrRefundedFunds() {
+            Payment payment = newPayment(usd("100.00"));
+
+            assertThat(payment.status()).isEqualTo(PaymentStatus.CREATED);
+            assertThat(payment.capturedAmount()).isEqualTo(usd("0.00"));
+            assertThat(payment.refundedAmount()).isEqualTo(usd("0.00"));
+            assertThat(payment.providerReference()).isEmpty();
+        }
+
+        @Test
+        void exposesTheFieldsItWasBuiltFrom() {
+            IdempotencyKey key = newKey();
+            Payment payment = Payment.initiate(ProviderType.ADYEN, usd("100.00"), key, NOW);
+
+            assertThat(payment.id()).isNotNull();
+            assertThat(payment.provider()).isEqualTo(ProviderType.ADYEN);
+            assertThat(payment.authorizedAmount()).isEqualTo(usd("100.00"));
+            assertThat(payment.idempotencyKey()).isEqualTo(key);
+            assertThat(payment.createdAt()).isEqualTo(NOW);
+            assertThat(payment.updatedAt()).isEqualTo(NOW);
+        }
+    }
+
+    @Nested
+    class MarkAuthorized {
+
+        @Test
+        void fromCreated_setsAuthorizedStatusAndReference_andRaisesEvent() {
+            Payment payment = newPayment(usd("100.00"));
+            ProviderReference reference = new ProviderReference("pi_123");
+
+            payment.markAuthorized(reference, LATER);
+
+            assertThat(payment.status()).isEqualTo(PaymentStatus.AUTHORIZED);
+            assertThat(payment.providerReference()).contains(reference);
+            assertThat(payment.updatedAt()).isEqualTo(LATER);
+            assertThat(payment.pullDomainEvents())
+                    .singleElement()
+                    .isInstanceOfSatisfying(
+                            PaymentAuthorized.class,
+                            event -> assertThat(event.providerReference()).isEqualTo(reference));
+        }
+
+        @Test
+        void whenAlreadyAuthorized_throws() {
+            Payment payment = newPayment(usd("100.00"));
+            payment.markAuthorized(new ProviderReference("pi_123"), NOW);
+
+            assertThatThrownBy(() -> payment.markAuthorized(new ProviderReference("pi_456"), LATER))
+                    .isInstanceOf(InvalidPaymentStateTransitionException.class);
+        }
+    }
+
+    @Nested
+    class Capture {
+
+        private Payment payment;
+
+        @BeforeEach
+        void authorizedPayment() {
+            payment = newPayment(usd("100.00"));
+            payment.markAuthorized(new ProviderReference("pi_123"), NOW);
+            payment.pullDomainEvents();
+        }
+
+        @Test
+        void partialAmount_movesToPartiallyCaptured() {
+            payment.capture(usd("40.00"), LATER);
+
+            assertThat(payment.status()).isEqualTo(PaymentStatus.PARTIALLY_CAPTURED);
+            assertThat(payment.capturedAmount()).isEqualTo(usd("40.00"));
+            assertThat(payment.capturableAmount()).isEqualTo(usd("60.00"));
+            assertThat(payment.pullDomainEvents()).hasOnlyElementsOfType(PaymentCaptured.class);
+        }
+
+        @Test
+        void fullRemainingBalance_movesToCaptured() {
+            payment.capture(usd("100.00"), LATER);
+
+            assertThat(payment.status()).isEqualTo(PaymentStatus.CAPTURED);
+            assertThat(payment.capturableAmount()).isEqualTo(usd("0.00"));
+        }
+
+        @Test
+        void moreThanCapturable_throwsAndLeavesStateUnchanged() {
+            assertThatThrownBy(() -> payment.capture(usd("150.00"), LATER))
+                    .isInstanceOf(InvalidCaptureAmountException.class);
+            assertThat(payment.status()).isEqualTo(PaymentStatus.AUTHORIZED);
+            assertThat(payment.capturedAmount()).isEqualTo(usd("0.00"));
+        }
+
+        @Test
+        void zeroAmount_throws() {
+            assertThatThrownBy(() -> payment.capture(usd("0.00"), LATER))
+                    .isInstanceOf(InvalidCaptureAmountException.class);
+        }
+
+        @Test
+        void fromNonCapturableStatus_throws() {
+            Payment created = newPayment(usd("100.00"));
+
+            assertThatThrownBy(() -> created.capture(usd("10.00"), LATER))
+                    .isInstanceOf(InvalidPaymentStateTransitionException.class);
+        }
+    }
+
+    @Nested
+    class Refund {
+
+        private Payment payment;
+
+        @BeforeEach
+        void capturedPayment() {
+            payment = newPayment(usd("100.00"));
+            payment.markAuthorized(new ProviderReference("pi_123"), NOW);
+            payment.capture(usd("100.00"), NOW);
+            payment.pullDomainEvents();
+        }
+
+        @Test
+        void partialAmount_movesToPartiallyRefunded() {
+            payment.refund(usd("30.00"), LATER);
+
+            assertThat(payment.status()).isEqualTo(PaymentStatus.PARTIALLY_REFUNDED);
+            assertThat(payment.refundedAmount()).isEqualTo(usd("30.00"));
+            assertThat(payment.refundableAmount()).isEqualTo(usd("70.00"));
+            assertThat(payment.pullDomainEvents()).hasOnlyElementsOfType(PaymentRefunded.class);
+        }
+
+        @Test
+        void fullCapturedAmount_movesToRefunded() {
+            payment.refund(usd("100.00"), LATER);
+
+            assertThat(payment.status()).isEqualTo(PaymentStatus.REFUNDED);
+            assertThat(payment.refundableAmount()).isEqualTo(usd("0.00"));
+        }
+
+        @Test
+        void moreThanRefundable_throwsAndLeavesStateUnchanged() {
+            assertThatThrownBy(() -> payment.refund(usd("150.00"), LATER))
+                    .isInstanceOf(InvalidRefundAmountException.class);
+            assertThat(payment.status()).isEqualTo(PaymentStatus.CAPTURED);
+            assertThat(payment.refundedAmount()).isEqualTo(usd("0.00"));
+        }
+
+        @Test
+        void fromNonRefundableStatus_throws() {
+            Payment authorizedOnly = newPayment(usd("100.00"));
+            authorizedOnly.markAuthorized(new ProviderReference("pi_123"), NOW);
+
+            assertThatThrownBy(() -> authorizedOnly.refund(usd("10.00"), LATER))
+                    .isInstanceOf(InvalidPaymentStateTransitionException.class);
+        }
+    }
+
+    @Nested
+    class MarkVoided {
+
+        @Test
+        void fromAuthorized_releasesFundsAndRaisesEvent() {
+            Payment payment = newPayment(usd("100.00"));
+            payment.markAuthorized(new ProviderReference("pi_123"), NOW);
+            payment.pullDomainEvents();
+
+            payment.markVoided(LATER);
+
+            assertThat(payment.status()).isEqualTo(PaymentStatus.VOIDED);
+            assertThat(payment.pullDomainEvents()).hasOnlyElementsOfType(PaymentVoided.class);
+        }
+
+        @Test
+        void beforeAuthorization_throws() {
+            Payment payment = newPayment(usd("100.00"));
+
+            assertThatThrownBy(() -> payment.markVoided(LATER))
+                    .isInstanceOf(InvalidPaymentStateTransitionException.class);
+        }
+
+        @Test
+        void afterCapture_throws() {
+            Payment payment = newPayment(usd("100.00"));
+            payment.markAuthorized(new ProviderReference("pi_123"), NOW);
+            payment.capture(usd("100.00"), NOW);
+
+            assertThatThrownBy(() -> payment.markVoided(LATER))
+                    .isInstanceOf(InvalidPaymentStateTransitionException.class);
+        }
+    }
+
+    @Nested
+    class Fail {
+
+        @Test
+        void fromNonTerminalStatus_setsFailedAndReason() {
+            Payment payment = newPayment(usd("100.00"));
+
+            payment.markFailed("card_declined", LATER);
+
+            assertThat(payment.status()).isEqualTo(PaymentStatus.FAILED);
+            assertThat(payment.failureReason()).contains("card_declined");
+            assertThat(payment.pullDomainEvents()).hasOnlyElementsOfType(PaymentFailed.class);
+        }
+
+        @Test
+        void fromTerminalStatus_throws() {
+            Payment payment = newPayment(usd("100.00"));
+            payment.markAuthorized(new ProviderReference("pi_123"), NOW);
+            payment.markVoided(LATER);
+
+            assertThatThrownBy(() -> payment.markFailed("too_late", LATER))
+                    .isInstanceOf(InvalidPaymentStateTransitionException.class);
+        }
+    }
+
+    @Nested
+    class Rehydrate {
+
+        @Test
+        void reconstructsFieldsExactlyAndRaisesNoEvents() {
+            PaymentId id = PaymentId.newId();
+            IdempotencyKey key = newKey();
+            ProviderReference reference = new ProviderReference("pi_123");
+
+            Payment payment = Payment.rehydrate(
+                    id,
+                    ProviderType.CHECKOUT,
+                    reference,
+                    usd("100.00"),
+                    usd("40.00"),
+                    usd("10.00"),
+                    PaymentStatus.PARTIALLY_CAPTURED,
+                    key,
+                    null,
+                    NOW,
+                    LATER);
+
+            assertThat(payment.id()).isEqualTo(id);
+            assertThat(payment.provider()).isEqualTo(ProviderType.CHECKOUT);
+            assertThat(payment.providerReference()).contains(reference);
+            assertThat(payment.authorizedAmount()).isEqualTo(usd("100.00"));
+            assertThat(payment.capturedAmount()).isEqualTo(usd("40.00"));
+            assertThat(payment.refundedAmount()).isEqualTo(usd("10.00"));
+            assertThat(payment.status()).isEqualTo(PaymentStatus.PARTIALLY_CAPTURED);
+            assertThat(payment.idempotencyKey()).isEqualTo(key);
+            assertThat(payment.failureReason()).isEmpty();
+            assertThat(payment.createdAt()).isEqualTo(NOW);
+            assertThat(payment.updatedAt()).isEqualTo(LATER);
+            assertThat(payment.pullDomainEvents()).isEmpty();
+        }
+    }
+
+    @Nested
+    class EqualsAndHashCode {
+
+        @Test
+        void paymentsWithTheSameId_areEqual_evenWithDifferentState() {
+            PaymentId id = PaymentId.newId();
+            IdempotencyKey key = newKey();
+            Payment created = Payment.rehydrate(
+                    id,
+                    ProviderType.STRIPE,
+                    null,
+                    usd("100.00"),
+                    usd("0.00"),
+                    usd("0.00"),
+                    PaymentStatus.CREATED,
+                    key,
+                    null,
+                    NOW,
+                    NOW);
+            Payment captured = Payment.rehydrate(
+                    id,
+                    ProviderType.STRIPE,
+                    new ProviderReference("pi_123"),
+                    usd("100.00"),
+                    usd("100.00"),
+                    usd("0.00"),
+                    PaymentStatus.CAPTURED,
+                    key,
+                    null,
+                    NOW,
+                    LATER);
+
+            assertThat(created).isEqualTo(captured).hasSameHashCodeAs(captured);
+        }
+
+        @Test
+        void paymentsWithDifferentIds_areNeverEqual() {
+            Payment first = newPayment(usd("100.00"));
+            Payment second = newPayment(usd("100.00"));
+
+            assertThat(first).isNotEqualTo(second);
+        }
+    }
+}
