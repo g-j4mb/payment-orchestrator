@@ -50,6 +50,10 @@ This project is intended for:
 
 The application follows the **Strategy Pattern**, **Adapter Pattern**, and **Dependency Inversion Principle**, allowing payment providers to be added without modifying the business layer.
 
+For how a single authorize request is checkpointed, sent to the gateway, and resolved when the
+provider's response never comes back synchronously, see the
+[authorization sequence diagram](docs/diagrams/authorize-sequence.md).
+
 ---
 
 ## Key Highlights
@@ -63,6 +67,8 @@ The application follows the **Strategy Pattern**, **Adapter Pattern**, and **Dep
 * Payment Status
 * Webhook Processing
 * Idempotent Requests
+* Crash-Safe Reconciliation (backend-owned idempotency keys, pending-state checkpoints, bounded-retry backstop job)
+* Circuit Breaker Resilience (Resilience4j)
 * Audit Logging
 * OpenAPI / Swagger Documentation
 * Docker Support
@@ -74,12 +80,16 @@ The application follows the **Strategy Pattern**, **Adapter Pattern**, and **Dep
 
 | Provider     | Status |
 | ------------ | :----: |
-| Stripe       |   🚧   |
+| Stripe       |   ✅   |
 | Adyen        |   🚧   |
 | Checkout.com |   🚧   |
 
-All three adapters are wired and resolvable through the gateway port; their provider calls are not
-implemented yet. Having all three in place from the start is deliberate — it keeps the port designed
+Stripe is fully implemented — authorize, capture, refund, and void, webhook signature verification
+with metadata-based correlation, a Resilience4j circuit breaker, and crash-safe reconciliation for
+outbound calls whose outcome never comes back synchronously.
+
+Adyen and Checkout.com are wired and resolvable through the gateway port, but their provider calls
+are still stubs. Having all three in place from the start is deliberate — it keeps the port designed
 against several providers rather than shaped around whichever one landed first.
 
 The architecture is designed to support additional providers with minimal implementation effort.
@@ -90,12 +100,14 @@ The architecture is designed to support additional providers with minimal implem
 
 ### Backend
 
-* Java 21
-* Spring Boot 3
+* Java 25
+* Spring Boot 4
 * Spring Web
 * Spring Validation
-* Spring Security
 * Spring Data JPA
+* Flyway (schema migrations)
+* Resilience4j (circuit breaker)
+* Stripe Java SDK
 
 ### Database
 
@@ -117,6 +129,9 @@ The architecture is designed to support additional providers with minimal implem
 * JUnit 5
 * Mockito
 * Testcontainers
+* WireMock (stubbed Stripe HTTP calls)
+* ArchUnit (enforced layering)
+* JaCoCo (coverage reporting)
 
 ---
 
@@ -167,8 +182,9 @@ com.j4mb.payment_orchestrator
     ├── domain/                      Tactical DDD — no Spring, no JPA, no HTTP
     │   ├── model/                   Payment (aggregate root), PaymentId
     │   ├── vo/                      Money, PaymentStatus, ProviderType, ProviderReference,
-    │   │                            IdempotencyKey
-    │   ├── event/                   PaymentAuthorized / Captured / Refunded / Voided
+    │   │                            IdempotencyKey, CaptureMode
+    │   ├── event/                   PaymentAuthorized / Captured / Refunded / Voided /
+    │   │                            AuthorizationPending / RefundPending
     │   ├── service/                 RefundPolicy
     │   └── exception/               Invariant violations
     ├── application/                 Use cases and the ports they talk through
@@ -178,11 +194,13 @@ com.j4mb.payment_orchestrator
     │   │                            IdempotencyStorePort, DomainEventPublisherPort
     │   ├── command/                 Input records per use case
     │   ├── dto/                     PaymentResult (read-only projection)
-    │   ├── service/                 Use-case implementations + PaymentGatewayResolver
+    │   ├── service/                 Use-case implementations, PaymentGatewayResolver,
+    │   │                            ReconcilePendingPaymentsService
     │   └── exception/               Application-level failures
     └── infrastructure/              Adapters — depend inward only
         └── adapter/
             ├── in/web/              PaymentController, WebhookController, DTOs, mapper
+            ├── in/scheduled/        PendingPaymentReconciliationJob
             └── out/
                 ├── persistence/     JPA entities, repositories, PaymentPersistenceAdapter
                 │   └── idempotency/ IdempotencyStoreAdapter
@@ -214,20 +232,18 @@ No domain or application code changes.
 
 ## Security
 
-* HTTPS
-* API Key Authentication
-* Secure Secret Management
-* Idempotency Keys
+* HTTPS (deployment-level)
+* Secure Secret Management (credentials read from the environment, never committed — see `.env`)
+* Idempotency Keys (client-facing and backend-owned, per provider call)
 * Webhook Signature Verification
 * Input Validation
-* Sensitive Data Masking
 
 ---
 
 ## Roadmap
 
 * [x] Hexagonal / DDD project structure with enforced boundaries
-* [ ] Stripe Integration
+* [x] Stripe Integration
 * [ ] Adyen Integration
 * [ ] Checkout.com Integration
 * [ ] Payment Dashboard
@@ -265,10 +281,8 @@ http://localhost:8080/swagger-ui.html
 * Kafka Event Streaming
 * Distributed Tracing
 * Redis Caching
-* Resilience4j Circuit Breakers
 * Event Sourcing
 * Multi-tenancy
-* Payment Reconciliation
 * PCI DSS Best Practices
 * AWS Deployment
 
