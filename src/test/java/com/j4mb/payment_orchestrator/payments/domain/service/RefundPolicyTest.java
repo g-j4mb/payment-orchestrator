@@ -6,6 +6,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import com.j4mb.payment_orchestrator.payments.domain.exception.InvalidPaymentStateTransitionException;
 import com.j4mb.payment_orchestrator.payments.domain.exception.InvalidRefundAmountException;
 import com.j4mb.payment_orchestrator.payments.domain.model.Payment;
+import com.j4mb.payment_orchestrator.payments.domain.vo.CaptureMode;
 import com.j4mb.payment_orchestrator.payments.domain.vo.IdempotencyKey;
 import com.j4mb.payment_orchestrator.payments.domain.vo.Money;
 import com.j4mb.payment_orchestrator.payments.domain.vo.ProviderReference;
@@ -29,7 +30,12 @@ class RefundPolicyTest {
     @BeforeEach
     void capturedPayment() {
         payment = Payment.initiate(
-                ProviderType.STRIPE, usd("100.00"), new IdempotencyKey("key-" + System.nanoTime()), NOW);
+                ProviderType.STRIPE,
+                usd("100.00"),
+                new IdempotencyKey("key-" + System.nanoTime()),
+                "tok_visa",
+                CaptureMode.MANUAL,
+                NOW);
         payment.markAuthorized(new ProviderReference("pi_123"), NOW);
         payment.capture(usd("100.00"), NOW);
     }
@@ -59,7 +65,12 @@ class RefundPolicyTest {
     @Test
     void rejectsAPaymentThatIsNotInARefundableStatus() {
         Payment authorizedOnly = Payment.initiate(
-                ProviderType.STRIPE, usd("100.00"), new IdempotencyKey("key-" + System.nanoTime()), NOW);
+                ProviderType.STRIPE,
+                usd("100.00"),
+                new IdempotencyKey("key-" + System.nanoTime()),
+                "tok_visa",
+                CaptureMode.MANUAL,
+                NOW);
         authorizedOnly.markAuthorized(new ProviderReference("pi_456"), NOW);
 
         assertThatThrownBy(() -> policy.validate(authorizedOnly, usd("10.00")))

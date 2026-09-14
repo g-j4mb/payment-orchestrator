@@ -1,7 +1,7 @@
 package com.j4mb.payment_orchestrator.payments.application.port.out;
 
-import com.j4mb.payment_orchestrator.payments.application.command.AuthorizePaymentCommand;
 import com.j4mb.payment_orchestrator.payments.domain.model.Payment;
+import com.j4mb.payment_orchestrator.payments.domain.vo.CaptureMode;
 import com.j4mb.payment_orchestrator.payments.domain.vo.Money;
 import com.j4mb.payment_orchestrator.payments.domain.vo.ProviderReference;
 import com.j4mb.payment_orchestrator.payments.domain.vo.ProviderType;
@@ -30,7 +30,7 @@ public interface PaymentGatewayPort {
      * @param captureMode when {@code AUTOMATIC}, the provider is asked to capture immediately
      */
     GatewayAuthorization authorize(
-            Payment payment, String paymentMethodToken, AuthorizePaymentCommand.CaptureMode captureMode);
+            Payment payment, String paymentMethodToken, CaptureMode captureMode);
 
     /** Takes previously authorized funds. */
     GatewayOperation capture(Payment payment, Money amount);
@@ -80,9 +80,22 @@ public interface PaymentGatewayPort {
         }
     }
 
-    /** A provider notification, normalized to this context's vocabulary. */
+    /**
+     * A provider notification, normalized to this context's vocabulary.
+     *
+     * @param localPaymentId this context's own {@code Payment} id, when the provider object carries
+     *     it back (e.g. Stripe metadata set at creation time) — null when the provider gives no way
+     *     to attach one. Lets {@code ProcessWebhookService} correlate an event even when {@code
+     *     reference} was never captured locally, such as a payment that crashed before a synchronous
+     *     response was ever received.
+     */
     record GatewayWebhookEvent(
-            ProviderReference reference, Type type, Money amount, String rawEventId, String rawStatus) {
+            ProviderReference reference,
+            Type type,
+            Money amount,
+            String rawEventId,
+            String rawStatus,
+            String localPaymentId) {
 
         public enum Type {
             AUTHORIZED,

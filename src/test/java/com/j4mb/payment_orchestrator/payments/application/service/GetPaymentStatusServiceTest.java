@@ -10,6 +10,7 @@ import com.j4mb.payment_orchestrator.payments.application.exception.PaymentNotFo
 import com.j4mb.payment_orchestrator.payments.application.port.out.PaymentRepositoryPort;
 import com.j4mb.payment_orchestrator.payments.domain.model.Payment;
 import com.j4mb.payment_orchestrator.payments.domain.model.PaymentId;
+import com.j4mb.payment_orchestrator.payments.domain.vo.CaptureMode;
 import com.j4mb.payment_orchestrator.payments.domain.vo.IdempotencyKey;
 import com.j4mb.payment_orchestrator.payments.domain.vo.Money;
 import com.j4mb.payment_orchestrator.payments.domain.vo.PaymentStatus;
@@ -46,6 +47,13 @@ class GetPaymentStatusServiceTest {
                 Money.of(new BigDecimal("0.00"), "USD"),
                 PaymentStatus.CAPTURED,
                 new IdempotencyKey("key-1"),
+                "tok_visa",
+                CaptureMode.MANUAL,
+                null,
+                0,
+                null,
+                null,
+                null,
                 null,
                 NOW,
                 NOW);

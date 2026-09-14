@@ -7,6 +7,7 @@ import com.j4mb.payment_orchestrator.payments.application.port.in.GetPaymentStat
 import com.j4mb.payment_orchestrator.payments.application.port.in.RefundPaymentUseCase;
 import com.j4mb.payment_orchestrator.payments.application.port.in.VoidPaymentUseCase;
 import com.j4mb.payment_orchestrator.payments.domain.model.PaymentId;
+import com.j4mb.payment_orchestrator.payments.domain.vo.PaymentStatus;
 import com.j4mb.payment_orchestrator.payments.infrastructure.adapter.in.web.dto.CaptureRequest;
 import com.j4mb.payment_orchestrator.payments.infrastructure.adapter.in.web.dto.PaymentRequest;
 import com.j4mb.payment_orchestrator.payments.infrastructure.adapter.in.web.dto.PaymentResponse;
@@ -64,14 +65,20 @@ public class PaymentController {
     }
 
     @PostMapping
-    @Operation(summary = "Create a payment", description = "Authorizes, and captures too when captureMode=AUTOMATIC.")
+    @Operation(
+            summary = "Create a payment",
+            description = "Authorizes, and captures too when captureMode=AUTOMATIC. "
+                    + "202 means the provider's response is not back yet — poll GET /{paymentId} or retry "
+                    + "this same request with the same Idempotency-Key.")
     public ResponseEntity<PaymentResponse> create(
             @Valid @RequestBody PaymentRequest request,
             @Parameter(description = "Makes the request safely repeatable.", required = true)
                     @RequestHeader("Idempotency-Key")
                     String idempotencyKey) {
         PaymentResult result = authorizePayment.authorize(mapper.toCommand(request, idempotencyKey));
-        return ResponseEntity.status(HttpStatus.CREATED).body(mapper.toResponse(result));
+        HttpStatus status =
+                result.status() == PaymentStatus.AUTHORIZATION_PENDING ? HttpStatus.ACCEPTED : HttpStatus.CREATED;
+        return ResponseEntity.status(status).body(mapper.toResponse(result));
     }
 
     @PostMapping("/{paymentId}/capture")
@@ -88,15 +95,19 @@ public class PaymentController {
     }
 
     @PostMapping("/{paymentId}/refund")
-    @Operation(summary = "Refund a captured payment")
-    public PaymentResponse refund(
+    @Operation(
+            summary = "Refund a captured payment",
+            description = "202 means the provider's response is not back yet — poll GET /{paymentId} or retry "
+                    + "this same request with the same Idempotency-Key.")
+    public ResponseEntity<PaymentResponse> refund(
             @PathVariable UUID paymentId,
             @Valid @RequestBody(required = false) RefundRequest request,
             @RequestHeader("Idempotency-Key") String idempotencyKey) {
         PaymentId id = new PaymentId(paymentId);
         RefundRequest body = request == null ? new RefundRequest(null, null) : request;
         PaymentResult result = refundPayment.refund(mapper.toCommand(id, body, idempotencyKey, currencyOf(id)));
-        return mapper.toResponse(result);
+        HttpStatus status = result.status() == PaymentStatus.REFUND_PENDING ? HttpStatus.ACCEPTED : HttpStatus.OK;
+        return ResponseEntity.status(status).body(mapper.toResponse(result));
     }
 
     @PostMapping("/{paymentId}/void")

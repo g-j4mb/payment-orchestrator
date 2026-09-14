@@ -4,6 +4,8 @@ import com.j4mb.payment_orchestrator.payments.domain.model.Payment;
 import com.j4mb.payment_orchestrator.payments.domain.model.PaymentId;
 import com.j4mb.payment_orchestrator.payments.domain.vo.ProviderReference;
 import com.j4mb.payment_orchestrator.payments.domain.vo.ProviderType;
+import java.time.Instant;
+import java.util.List;
 import java.util.Optional;
 
 /**
@@ -34,4 +36,14 @@ public interface PaymentRepositoryPort {
 
     /** Correlates an incoming webhook back to the aggregate it concerns. */
     Optional<Payment> findByProviderReference(ProviderType provider, ProviderReference reference);
+
+    /**
+     * Payments still in {@code AUTHORIZATION_PENDING} that have not been updated since {@code
+     * threshold} — candidates for {@code ReconcilePendingPaymentsService}, the backstop for pending
+     * authorizations webhooks did not resolve.
+     */
+    List<Payment> findAuthorizationPendingOlderThan(Instant threshold);
+
+    /** Same as {@link #findAuthorizationPendingOlderThan}, for payments in {@code REFUND_PENDING}. */
+    List<Payment> findRefundPendingOlderThan(Instant threshold);
 }

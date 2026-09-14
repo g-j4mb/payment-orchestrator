@@ -29,6 +29,29 @@
 	<properties>
 		<java.version>25</java.version>
 	</properties>
+	<!-- Pins every org.eclipse.jetty(.ee10) artifact to the version wiremock-jetty12:3.13.2 was
+	     actually built against (its own jetty-ee10-*:12.0.30 dependencies). Without this, the
+	     wiremock core jar's own jetty-server dependency drags in a newer jetty-server/jetty-io
+	     (12.1.10) that is binary-incompatible with the Jetty12HttpServer class shipped in
+	     wiremock-jetty12:3.13.2 and fails at server startup with NoClassDefFoundError. -->
+	<dependencyManagement>
+		<dependencies>
+			<dependency>
+				<groupId>org.eclipse.jetty</groupId>
+				<artifactId>jetty-bom</artifactId>
+				<version>12.0.30</version>
+				<type>pom</type>
+				<scope>import</scope>
+			</dependency>
+			<dependency>
+				<groupId>org.eclipse.jetty.ee10</groupId>
+				<artifactId>jetty-ee10-bom</artifactId>
+				<version>12.0.30</version>
+				<type>pom</type>
+				<scope>import</scope>
+			</dependency>
+		</dependencies>
+	</dependencyManagement>
 	<dependencies>
 		<dependency>
 			<groupId>org.springframework.boot</groupId>
@@ -65,6 +88,18 @@
 			<groupId>org.springdoc</groupId>
 			<artifactId>springdoc-openapi-starter-webmvc-ui</artifactId>
 			<version>3.0.2</version>
+		</dependency>
+		<dependency>
+			<groupId>com.stripe</groupId>
+			<artifactId>stripe-java</artifactId>
+			<version>33.4.0</version>
+		</dependency>
+		<!-- Short-circuits calls to the Stripe adapter during an outage instead of letting every
+		     caller wait out the full connect/read timeout. -->
+		<dependency>
+			<groupId>io.github.resilience4j</groupId>
+			<artifactId>resilience4j-spring-boot3</artifactId>
+			<version>2.3.0</version>
 		</dependency>
 
 		<dependency>
@@ -124,6 +159,42 @@
 		<dependency>
 			<groupId>org.testcontainers</groupId>
 			<artifactId>testcontainers-postgresql</artifactId>
+			<scope>test</scope>
+		</dependency>
+		<!-- Stubs Stripe's HTTP API in StripePaymentGatewayAdapterTest, so it can verify the actual
+		     outgoing request shape without hitting real Stripe or needing an API key. -->
+		<dependency>
+			<groupId>org.wiremock</groupId>
+			<artifactId>wiremock</artifactId>
+			<version>3.13.2</version>
+			<scope>test</scope>
+			<exclusions>
+				<!-- Only needed for WireMock's proxy/record feature (unused here); pulling them in
+				     alongside wiremock-jetty12's Jetty 12 artifacts mixes incompatible Jetty major
+				     versions on the classpath and breaks server startup. -->
+				<exclusion>
+					<groupId>org.eclipse.jetty</groupId>
+					<artifactId>jetty-servlet</artifactId>
+				</exclusion>
+				<exclusion>
+					<groupId>org.eclipse.jetty</groupId>
+					<artifactId>jetty-servlets</artifactId>
+				</exclusion>
+				<exclusion>
+					<groupId>org.eclipse.jetty</groupId>
+					<artifactId>jetty-webapp</artifactId>
+				</exclusion>
+				<exclusion>
+					<groupId>org.eclipse.jetty.http2</groupId>
+					<artifactId>http2-server</artifactId>
+				</exclusion>
+			</exclusions>
+		</dependency>
+		<!-- wiremock's core jar is server-agnostic; this supplies the embedded HTTP server it runs on. -->
+		<dependency>
+			<groupId>org.wiremock</groupId>
+			<artifactId>wiremock-jetty12</artifactId>
+			<version>3.13.2</version>
 			<scope>test</scope>
 		</dependency>
 		<!-- Enforces the Clean Architecture dependency rule at build time; see ArchitectureTest. -->

@@ -1,9 +1,11 @@
 package com.j4mb.payment_orchestrator.payments.infrastructure.adapter.out.audit;
 
 import com.j4mb.payment_orchestrator.common.DomainEvent;
+import com.j4mb.payment_orchestrator.payments.domain.event.PaymentAuthorizationPending;
 import com.j4mb.payment_orchestrator.payments.domain.event.PaymentAuthorized;
 import com.j4mb.payment_orchestrator.payments.domain.event.PaymentCaptured;
 import com.j4mb.payment_orchestrator.payments.domain.event.PaymentFailed;
+import com.j4mb.payment_orchestrator.payments.domain.event.PaymentRefundPending;
 import com.j4mb.payment_orchestrator.payments.domain.event.PaymentRefunded;
 import com.j4mb.payment_orchestrator.payments.domain.event.PaymentVoided;
 import java.time.Clock;
@@ -60,8 +62,10 @@ public class PaymentAuditLogEventListener {
 
     private UUID paymentIdOf(DomainEvent event) {
         return switch (event) {
+            case PaymentAuthorizationPending e -> e.paymentId().value();
             case PaymentAuthorized e -> e.paymentId().value();
             case PaymentCaptured e -> e.paymentId().value();
+            case PaymentRefundPending e -> e.paymentId().value();
             case PaymentRefunded e -> e.paymentId().value();
             case PaymentVoided e -> e.paymentId().value();
             case PaymentFailed e -> e.paymentId().value();

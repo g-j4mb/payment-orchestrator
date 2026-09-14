@@ -40,6 +40,12 @@ payments:
     base-url: ${STRIPE_BASE_URL:https://api.stripe.com}
     connect-timeout: 5s
     read-timeout: 30s
+  reconciliation:
+    # Webhook correlation (see ProcessWebhookService) resolves most pending payments within seconds;
+    # this job is the backstop for the rest, so it can run infrequently.
+    interval: PT10M
+    max-attempts: 5
+    max-age: P1D
 
 springdoc:
   swagger-ui:
@@ -50,3 +56,14 @@ management:
     web:
       exposure:
         include: health,info
+
+resilience4j:
+  circuitbreaker:
+    instances:
+      stripe:
+        sliding-window-type: count_based
+        sliding-window-size: 20
+        minimum-number-of-calls: 10
+        failure-rate-threshold: 50
+        wait-duration-in-open-state: 30s
+        permitted-number-of-calls-in-half-open-state: 5

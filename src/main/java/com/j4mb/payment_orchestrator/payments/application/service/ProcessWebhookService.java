@@ -8,6 +8,8 @@ import com.j4mb.payment_orchestrator.payments.application.port.out.PaymentGatewa
 import com.j4mb.payment_orchestrator.payments.application.port.out.PaymentRepositoryPort;
 import com.j4mb.payment_orchestrator.payments.domain.exception.InvalidPaymentStateTransitionException;
 import com.j4mb.payment_orchestrator.payments.domain.model.Payment;
+import com.j4mb.payment_orchestrator.payments.domain.model.PaymentId;
+import com.j4mb.payment_orchestrator.payments.domain.vo.PaymentStatus;
 import java.time.Clock;
 import java.util.Optional;
 import org.slf4j.Logger;
@@ -55,6 +57,12 @@ public class ProcessWebhookService implements ProcessWebhookUseCase {
 
         GatewayWebhookEvent event = parsed.get();
         Optional<Payment> found = paymentRepository.findByProviderReference(command.provider(), event.reference());
+        // A payment that crashed before ever recording providerReference (see AUTHORIZATION_PENDING)
+        // has nothing to match on by reference. The provider's own metadata, echoed back on the
+        // event, is the only remaining way to find it.
+        if (found.isEmpty() && event.localPaymentId() != null) {
+            found = paymentRepository.findById(PaymentId.of(event.localPaymentId()));
+        }
         if (found.isEmpty()) {
             log.warn("Received {} webhook for unknown reference {}", command.provider(), event.reference());
             return;
@@ -76,10 +84,25 @@ public class ProcessWebhookService implements ProcessWebhookUseCase {
     private void apply(Payment payment, GatewayWebhookEvent event) {
         switch (event.type()) {
             case AUTHORIZED -> payment.markAuthorized(event.reference(), clock.instant());
-            case CAPTURED -> payment.capture(
-                    event.amount() != null ? event.amount() : payment.capturableAmount(), clock.instant());
-            case REFUNDED -> payment.refund(
-                    event.amount() != null ? event.amount() : payment.refundableAmount(), clock.instant());
+            case CAPTURED -> {
+                // An auto-captured authorization whose synchronous response was lost is still only
+                // AUTHORIZATION_PENDING here — capture() requires AUTHORIZED first.
+                if (payment.status() == PaymentStatus.AUTHORIZATION_PENDING) {
+                    payment.markAuthorized(event.reference(), clock.instant());
+                }
+                payment.capture(
+                        event.amount() != null ? event.amount() : payment.capturableAmount(), clock.instant());
+            }
+            case REFUNDED -> {
+                // The confirmation of our own in-flight attempt (see beginRefundAttempt) rather than
+                // a fresh refund: REFUND_PENDING is not itself refundable, so refund() would reject it.
+                if (payment.status() == PaymentStatus.REFUND_PENDING) {
+                    payment.resolveRefundPending(clock.instant());
+                } else {
+                    payment.refund(
+                            event.amount() != null ? event.amount() : payment.refundableAmount(), clock.instant());
+                }
+            }
             case VOIDED -> payment.markVoided(clock.instant());
             case FAILED -> payment.markFailed(event.rawStatus(), clock.instant());
         }

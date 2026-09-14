@@ -14,8 +14,13 @@ import com.j4mb.payment_orchestrator.payments.domain.service.RefundPolicy;
 import com.j4mb.payment_orchestrator.payments.domain.vo.Money;
 import java.time.Clock;
 import java.util.Optional;
+import java.util.UUID;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionTemplate;
 
 /**
  * Returns captured funds to the payer.
@@ -26,6 +31,7 @@ import org.springframework.transaction.annotation.Transactional;
 @Service
 public class RefundPaymentService implements RefundPaymentUseCase {
 
+    private static final Logger log = LoggerFactory.getLogger(RefundPaymentService.class);
     private static final String OPERATION = "refund";
 
     private final PaymentRepositoryPort paymentRepository;
@@ -35,19 +41,25 @@ public class RefundPaymentService implements RefundPaymentUseCase {
     private final RefundPolicy refundPolicy;
     private final Clock clock;
 
+    /** See {@code AuthorizePaymentService} for why this is a {@code TransactionTemplate}. */
+    private final TransactionTemplate requiresNewTransaction;
+
     public RefundPaymentService(
             PaymentRepositoryPort paymentRepository,
             PaymentGatewayResolver gatewayResolver,
             IdempotencyCheckService idempotencyCheck,
             DomainEventPublisherPort eventPublisher,
             RefundPolicy refundPolicy,
-            Clock clock) {
+            Clock clock,
+            PlatformTransactionManager transactionManager) {
         this.paymentRepository = paymentRepository;
         this.gatewayResolver = gatewayResolver;
         this.idempotencyCheck = idempotencyCheck;
         this.eventPublisher = eventPublisher;
         this.refundPolicy = refundPolicy;
         this.clock = clock;
+        this.requiresNewTransaction = new TransactionTemplate(transactionManager);
+        this.requiresNewTransaction.setPropagationBehavior(TransactionTemplate.PROPAGATION_REQUIRES_NEW);
     }
 
     @Override
@@ -58,34 +70,64 @@ public class RefundPaymentService implements RefundPaymentUseCase {
             return PaymentResult.from(replayed.get());
         }
 
-        // Everything between claiming the key and succeeding runs under one release path. Releasing
-        // only on gateway failures would strand the key on any other error — an unknown payment or a
-        // policy rejection — and a stranded key makes every retry a 409 forever.
         Payment payment;
+        Money amount;
         try {
             payment = requireForUpdate(command.paymentId());
-            Money amount = command.amount().orElseGet(payment::refundableAmount);
-
+            amount = command.amount().orElseGet(payment::refundableAmount);
             // Runs before the provider is asked to return money: a refund the policy would reject
             // must never reach the gateway. RefundPolicy itself enforces the aggregate's own
-            // invariants before layering anything further on top, so this one call covers both.
+            // invariants before layering anything further on top, so this one call covers both —
+            // including rejecting a second attempt while REFUND_PENDING (see beginRefundAttempt).
             refundPolicy.validate(payment, amount);
-
-            PaymentGatewayPort gateway = gatewayResolver.resolve(payment.provider());
-            PaymentGatewayPort.GatewayOperation operation = gateway.refund(payment, amount, command.reason());
-            if (!operation.successful()) {
-                throw new PaymentDeclinedException(payment.id(), operation.failureReason());
-            }
-
-            payment.refund(amount, clock.instant());
         } catch (RuntimeException ex) {
             idempotencyCheck.abandon(command.idempotencyKey());
             throw ex;
         }
 
-        Payment saved = paymentRepository.save(payment);
-        idempotencyCheck.complete(command.idempotencyKey(), saved.id());
-        eventPublisher.publishAll(payment.pullDomainEvents());
+        // A fresh key per attempt, not payment.id(): unlike authorize, a payment can be refunded more
+        // than once over its life, so each attempt needs its own Stripe idempotency key.
+        payment.beginRefundAttempt(amount, command.reason(), UUID.randomUUID().toString(), clock.instant());
+
+        // Committed in its own transaction before the provider is ever called — see
+        // AuthorizePaymentService for why. Survives a crash mid-call.
+        Payment checkpointed = requiresNewTransaction.execute(status -> {
+            Payment saved = paymentRepository.save(payment);
+            idempotencyCheck.complete(command.idempotencyKey(), saved.id());
+            eventPublisher.publishAll(payment.pullDomainEvents());
+            return saved;
+        });
+
+        PaymentGatewayPort gateway = gatewayResolver.resolve(checkpointed.provider());
+        PaymentGatewayPort.GatewayOperation operation;
+        try {
+            operation = gateway.refund(
+                    checkpointed,
+                    checkpointed.pendingRefundAmount().orElseThrow(),
+                    checkpointed.pendingRefundReason().orElse(null));
+        } catch (RuntimeException ex) {
+            log.warn(
+                    "{} refund call for {} did not complete; remains pending for reconciliation",
+                    checkpointed.provider(),
+                    checkpointed.id(),
+                    ex);
+            return PaymentResult.from(checkpointed);
+        }
+
+        if (!operation.successful()) {
+            // A clean decline is a known, definitive outcome, unlike an ambiguous gateway failure —
+            // there is nothing to reconcile. Revert the pending attempt and free the idempotency key
+            // so a retry starts a genuinely new attempt rather than replaying stale pending state.
+            checkpointed.cancelRefundPending(clock.instant());
+            paymentRepository.save(checkpointed);
+            eventPublisher.publishAll(checkpointed.pullDomainEvents());
+            idempotencyCheck.abandon(command.idempotencyKey());
+            throw new PaymentDeclinedException(checkpointed.id(), operation.failureReason());
+        }
+
+        checkpointed.resolveRefundPending(clock.instant());
+        Payment saved = paymentRepository.save(checkpointed);
+        eventPublisher.publishAll(checkpointed.pullDomainEvents());
         return PaymentResult.from(saved);
     }
 

@@ -2,6 +2,7 @@ package com.j4mb.payment_orchestrator.payments.infrastructure.adapter.out.persis
 
 import com.j4mb.payment_orchestrator.payments.domain.model.Payment;
 import com.j4mb.payment_orchestrator.payments.domain.model.PaymentId;
+import com.j4mb.payment_orchestrator.payments.domain.vo.CaptureMode;
 import com.j4mb.payment_orchestrator.payments.domain.vo.IdempotencyKey;
 import com.j4mb.payment_orchestrator.payments.domain.vo.Money;
 import com.j4mb.payment_orchestrator.payments.domain.vo.PaymentStatus;
@@ -32,7 +33,14 @@ public class PaymentEntityMapper {
                 new Money(entity.getRefundedAmount(), currency),
                 PaymentStatus.valueOf(entity.getStatus()),
                 new IdempotencyKey(entity.getIdempotencyKey()),
+                entity.getPaymentMethodToken(),
+                CaptureMode.valueOf(entity.getCaptureMode()),
                 entity.getFailureReason(),
+                entity.getReconciliationAttempts(),
+                entity.getPendingSince(),
+                entity.getPendingRefundAmount() == null ? null : new Money(entity.getPendingRefundAmount(), currency),
+                entity.getPendingRefundReason(),
+                entity.getRefundAttemptIdempotencyKey(),
                 entity.getCreatedAt(),
                 entity.getUpdatedAt());
     }
@@ -42,6 +50,8 @@ public class PaymentEntityMapper {
         PaymentJpaEntity entity = new PaymentJpaEntity(
                 payment.id().value(),
                 payment.idempotencyKey().value(),
+                payment.paymentMethodToken(),
+                payment.captureMode().name(),
                 payment.authorizedAmount().currency().getCurrencyCode(),
                 payment.authorizedAmount().amount(),
                 payment.createdAt());
@@ -63,6 +73,13 @@ public class PaymentEntityMapper {
         entity.setRefundedAmount(payment.refundedAmount().amount());
         entity.setStatus(payment.status().name());
         entity.setFailureReason(payment.failureReason().orElse(null));
+        entity.setReconciliationAttempts(payment.reconciliationAttempts());
+        entity.setPendingSince(payment.pendingSince().orElse(null));
+        entity.setPendingRefundAmount(
+                payment.pendingRefundAmount().map(Money::amount).orElse(null));
+        entity.setPendingRefundReason(payment.pendingRefundReason().orElse(null));
+        entity.setRefundAttemptIdempotencyKey(
+                payment.refundAttemptIdempotencyKey().orElse(null));
         entity.setUpdatedAt(payment.updatedAt());
     }
 }

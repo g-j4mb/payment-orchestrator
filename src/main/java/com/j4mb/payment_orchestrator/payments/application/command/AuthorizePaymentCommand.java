@@ -1,5 +1,6 @@
 package com.j4mb.payment_orchestrator.payments.application.command;
 
+import com.j4mb.payment_orchestrator.payments.domain.vo.CaptureMode;
 import com.j4mb.payment_orchestrator.payments.domain.vo.IdempotencyKey;
 import com.j4mb.payment_orchestrator.payments.domain.vo.Money;
 import com.j4mb.payment_orchestrator.payments.domain.vo.ProviderType;
@@ -24,11 +25,5 @@ public record AuthorizePaymentCommand(
         Objects.requireNonNull(amount, "amount must not be null");
         Objects.requireNonNull(idempotencyKey, "idempotencyKey must not be null");
         Objects.requireNonNull(captureMode, "captureMode must not be null");
-    }
-
-    /** Whether the provider should capture immediately after authorizing. */
-    public enum CaptureMode {
-        AUTOMATIC,
-        MANUAL
     }
 }

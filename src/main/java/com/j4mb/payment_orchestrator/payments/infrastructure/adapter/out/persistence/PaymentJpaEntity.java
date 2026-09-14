@@ -48,8 +48,29 @@ public class PaymentJpaEntity {
     @Column(name = "idempotency_key", nullable = false, length = 255)
     private String idempotencyKey;
 
+    @Column(name = "payment_method_token", nullable = false, updatable = false, length = 255)
+    private String paymentMethodToken;
+
+    @Column(name = "capture_mode", nullable = false, updatable = false, length = 16)
+    private String captureMode;
+
     @Column(name = "failure_reason", length = 512)
     private String failureReason;
+
+    @Column(name = "reconciliation_attempts", nullable = false)
+    private int reconciliationAttempts;
+
+    @Column(name = "pending_since")
+    private Instant pendingSince;
+
+    @Column(name = "pending_refund_amount", precision = 19, scale = 4)
+    private BigDecimal pendingRefundAmount;
+
+    @Column(name = "pending_refund_reason", length = 512)
+    private String pendingRefundReason;
+
+    @Column(name = "refund_attempt_idempotency_key", length = 255)
+    private String refundAttemptIdempotencyKey;
 
     @Column(name = "created_at", nullable = false, updatable = false)
     private Instant createdAt;
@@ -68,9 +89,17 @@ public class PaymentJpaEntity {
 
     /** Creates a row for a new payment. The fields taken here never change afterwards. */
     public PaymentJpaEntity(
-            UUID id, String idempotencyKey, String currency, BigDecimal authorizedAmount, Instant createdAt) {
+            UUID id,
+            String idempotencyKey,
+            String paymentMethodToken,
+            String captureMode,
+            String currency,
+            BigDecimal authorizedAmount,
+            Instant createdAt) {
         this.id = id;
         this.idempotencyKey = idempotencyKey;
+        this.paymentMethodToken = paymentMethodToken;
+        this.captureMode = captureMode;
         this.currency = currency;
         this.authorizedAmount = authorizedAmount;
         this.createdAt = createdAt;
@@ -132,12 +161,60 @@ public class PaymentJpaEntity {
         return idempotencyKey;
     }
 
+    public String getPaymentMethodToken() {
+        return paymentMethodToken;
+    }
+
+    public String getCaptureMode() {
+        return captureMode;
+    }
+
     public String getFailureReason() {
         return failureReason;
     }
 
     public void setFailureReason(String failureReason) {
         this.failureReason = failureReason;
+    }
+
+    public int getReconciliationAttempts() {
+        return reconciliationAttempts;
+    }
+
+    public void setReconciliationAttempts(int reconciliationAttempts) {
+        this.reconciliationAttempts = reconciliationAttempts;
+    }
+
+    public Instant getPendingSince() {
+        return pendingSince;
+    }
+
+    public void setPendingSince(Instant pendingSince) {
+        this.pendingSince = pendingSince;
+    }
+
+    public BigDecimal getPendingRefundAmount() {
+        return pendingRefundAmount;
+    }
+
+    public void setPendingRefundAmount(BigDecimal pendingRefundAmount) {
+        this.pendingRefundAmount = pendingRefundAmount;
+    }
+
+    public String getPendingRefundReason() {
+        return pendingRefundReason;
+    }
+
+    public void setPendingRefundReason(String pendingRefundReason) {
+        this.pendingRefundReason = pendingRefundReason;
+    }
+
+    public String getRefundAttemptIdempotencyKey() {
+        return refundAttemptIdempotencyKey;
+    }
+
+    public void setRefundAttemptIdempotencyKey(String refundAttemptIdempotencyKey) {
+        this.refundAttemptIdempotencyKey = refundAttemptIdempotencyKey;
     }
 
     public Instant getCreatedAt() {

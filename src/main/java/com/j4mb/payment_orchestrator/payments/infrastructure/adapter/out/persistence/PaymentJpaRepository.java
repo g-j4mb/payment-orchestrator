@@ -1,6 +1,8 @@
 package com.j4mb.payment_orchestrator.payments.infrastructure.adapter.out.persistence;
 
 import jakarta.persistence.LockModeType;
+import java.time.Instant;
+import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 import org.springframework.data.jpa.repository.JpaRepository;
@@ -27,4 +29,7 @@ public interface PaymentJpaRepository extends JpaRepository<PaymentJpaEntity, UU
     Optional<PaymentJpaEntity> findByProviderAndProviderReference(String provider, String providerReference);
 
     Optional<PaymentJpaEntity> findByIdempotencyKey(String idempotencyKey);
+
+    /** Backs both {@code findAuthorizationPendingOlderThan} and {@code findRefundPendingOlderThan}. */
+    List<PaymentJpaEntity> findByStatusAndUpdatedAtBefore(String status, Instant threshold);
 }

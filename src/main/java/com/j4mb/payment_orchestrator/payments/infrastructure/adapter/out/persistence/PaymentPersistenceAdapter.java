@@ -3,9 +3,12 @@ package com.j4mb.payment_orchestrator.payments.infrastructure.adapter.out.persis
 import com.j4mb.payment_orchestrator.payments.application.port.out.PaymentRepositoryPort;
 import com.j4mb.payment_orchestrator.payments.domain.model.Payment;
 import com.j4mb.payment_orchestrator.payments.domain.model.PaymentId;
+import com.j4mb.payment_orchestrator.payments.domain.vo.PaymentStatus;
 import com.j4mb.payment_orchestrator.payments.domain.vo.ProviderReference;
 import com.j4mb.payment_orchestrator.payments.domain.vo.ProviderType;
 import com.j4mb.payment_orchestrator.payments.infrastructure.adapter.out.persistence.mapper.PaymentEntityMapper;
+import java.time.Instant;
+import java.util.List;
 import java.util.Optional;
 import org.springframework.stereotype.Component;
 
@@ -49,5 +52,23 @@ public class PaymentPersistenceAdapter implements PaymentRepositoryPort {
         return repository
                 .findByProviderAndProviderReference(provider.name(), reference.value())
                 .map(mapper::toDomain);
+    }
+
+    @Override
+    public List<Payment> findAuthorizationPendingOlderThan(Instant threshold) {
+        return repository
+                .findByStatusAndUpdatedAtBefore(PaymentStatus.AUTHORIZATION_PENDING.name(), threshold)
+                .stream()
+                .map(mapper::toDomain)
+                .toList();
+    }
+
+    @Override
+    public List<Payment> findRefundPendingOlderThan(Instant threshold) {
+        return repository
+                .findByStatusAndUpdatedAtBefore(PaymentStatus.REFUND_PENDING.name(), threshold)
+                .stream()
+                .map(mapper::toDomain)
+                .toList();
     }
 }

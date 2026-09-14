@@ -3,7 +3,6 @@ package com.j4mb.payment_orchestrator.payments.application.service;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.argThat;
-import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -16,6 +15,7 @@ import com.j4mb.payment_orchestrator.payments.application.port.out.PaymentGatewa
 import com.j4mb.payment_orchestrator.payments.application.port.out.PaymentRepositoryPort;
 import com.j4mb.payment_orchestrator.payments.domain.model.Payment;
 import com.j4mb.payment_orchestrator.payments.domain.model.PaymentId;
+import com.j4mb.payment_orchestrator.payments.domain.vo.CaptureMode;
 import com.j4mb.payment_orchestrator.payments.domain.vo.IdempotencyKey;
 import com.j4mb.payment_orchestrator.payments.domain.vo.Money;
 import com.j4mb.payment_orchestrator.payments.domain.vo.PaymentStatus;
@@ -42,16 +42,30 @@ class ProcessWebhookServiceTest {
     }
 
     private static Payment paymentIn(PaymentId id, PaymentStatus status, Money captured, Money refunded) {
+        return paymentIn(id, REFERENCE, status, captured, refunded);
+    }
+
+    private static Payment paymentIn(
+            PaymentId id, ProviderReference reference, PaymentStatus status, Money captured, Money refunded) {
+        boolean pending = status == PaymentStatus.AUTHORIZATION_PENDING || status == PaymentStatus.REFUND_PENDING;
+        boolean refundPending = status == PaymentStatus.REFUND_PENDING;
         Payment payment = Payment.rehydrate(
                 id,
                 ProviderType.STRIPE,
-                REFERENCE,
+                reference,
                 usd("100.00"),
                 captured,
                 refunded,
                 status,
                 new IdempotencyKey("original-key-" + id),
+                "tok_visa",
+                CaptureMode.MANUAL,
                 null,
+                0,
+                pending ? NOW : null,
+                refundPending ? usd("40.00") : null,
+                refundPending ? "requested_by_customer" : null,
+                refundPending ? "attempt-1" : null,
                 NOW,
                 NOW);
         payment.pullDomainEvents();
@@ -91,9 +105,9 @@ class ProcessWebhookServiceTest {
     }
 
     @Test
-    void webhookForAnUnknownReference_doesNothing() {
-        GatewayWebhookEvent event =
-                new GatewayWebhookEvent(REFERENCE, GatewayWebhookEvent.Type.AUTHORIZED, null, "evt_1", "authorized");
+    void webhookForAnUnknownReferenceAndNoLocalPaymentId_doesNothing() {
+        GatewayWebhookEvent event = new GatewayWebhookEvent(
+                REFERENCE, GatewayWebhookEvent.Type.AUTHORIZED, null, "evt_1", "authorized", null);
         when(gateway.parseWebhook(any(), any())).thenReturn(Optional.of(event));
         when(paymentRepository.findByProviderReference(ProviderType.STRIPE, REFERENCE)).thenReturn(Optional.empty());
 
@@ -101,6 +115,24 @@ class ProcessWebhookServiceTest {
 
         verify(paymentRepository, never()).save(any());
         verify(eventPublisher, never()).publishAll(any());
+    }
+
+    @Test
+    void webhookForAnUnknownReference_fallsBackToLocalPaymentIdMetadata() {
+        PaymentId id = PaymentId.newId();
+        // AUTHORIZATION_PENDING: providerReference was never recorded locally — exactly the case a
+        // crash mid-authorize-call leaves behind — so only the metadata id can find it.
+        Payment payment = paymentIn(id, PaymentStatus.AUTHORIZATION_PENDING, usd("0.00"), usd("0.00"));
+        GatewayWebhookEvent event = new GatewayWebhookEvent(
+                REFERENCE, GatewayWebhookEvent.Type.AUTHORIZED, null, "evt_1", "authorized", id.value().toString());
+        when(gateway.parseWebhook(any(), any())).thenReturn(Optional.of(event));
+        when(paymentRepository.findByProviderReference(ProviderType.STRIPE, REFERENCE)).thenReturn(Optional.empty());
+        when(paymentRepository.findById(id)).thenReturn(Optional.of(payment));
+
+        service.process(command());
+
+        verify(paymentRepository).save(argThat(p -> p.status() == PaymentStatus.AUTHORIZED));
+        verify(eventPublisher).publishAll(argThat(events -> !events.isEmpty()));
     }
 
     @Nested
@@ -116,8 +148,8 @@ class ProcessWebhookServiceTest {
         void authorized_movesACreatedPaymentToAuthorized() {
             PaymentId id = PaymentId.newId();
             Payment payment = paymentIn(id, PaymentStatus.CREATED, usd("0.00"), usd("0.00"));
-            GatewayWebhookEvent event =
-                    new GatewayWebhookEvent(REFERENCE, GatewayWebhookEvent.Type.AUTHORIZED, null, "evt_1", "authorized");
+            GatewayWebhookEvent event = new GatewayWebhookEvent(
+                    REFERENCE, GatewayWebhookEvent.Type.AUTHORIZED, null, "evt_1", "authorized", null);
             arrange(payment, event);
 
             service.process(command());
@@ -127,11 +159,24 @@ class ProcessWebhookServiceTest {
         }
 
         @Test
+        void authorized_alsoResolvesAnAuthorizationPendingPayment() {
+            PaymentId id = PaymentId.newId();
+            Payment payment = paymentIn(id, PaymentStatus.AUTHORIZATION_PENDING, usd("0.00"), usd("0.00"));
+            GatewayWebhookEvent event = new GatewayWebhookEvent(
+                    REFERENCE, GatewayWebhookEvent.Type.AUTHORIZED, null, "evt_1", "authorized", null);
+            arrange(payment, event);
+
+            service.process(command());
+
+            verify(paymentRepository).save(argThat(p -> p.status() == PaymentStatus.AUTHORIZED));
+        }
+
+        @Test
         void captured_withExplicitAmount_capturesThatAmount() {
             PaymentId id = PaymentId.newId();
             Payment payment = paymentIn(id, PaymentStatus.AUTHORIZED, usd("0.00"), usd("0.00"));
             GatewayWebhookEvent event = new GatewayWebhookEvent(
-                    REFERENCE, GatewayWebhookEvent.Type.CAPTURED, usd("40.00"), "evt_2", "captured");
+                    REFERENCE, GatewayWebhookEvent.Type.CAPTURED, usd("40.00"), "evt_2", "captured", null);
             arrange(payment, event);
 
             service.process(command());
@@ -145,8 +190,25 @@ class ProcessWebhookServiceTest {
         void captured_withNoAmount_capturesTheFullAuthorizedBalance() {
             PaymentId id = PaymentId.newId();
             Payment payment = paymentIn(id, PaymentStatus.AUTHORIZED, usd("0.00"), usd("0.00"));
-            GatewayWebhookEvent event =
-                    new GatewayWebhookEvent(REFERENCE, GatewayWebhookEvent.Type.CAPTURED, null, "evt_3", "captured");
+            GatewayWebhookEvent event = new GatewayWebhookEvent(
+                    REFERENCE, GatewayWebhookEvent.Type.CAPTURED, null, "evt_3", "captured", null);
+            arrange(payment, event);
+
+            service.process(command());
+
+            verify(paymentRepository)
+                    .save(argThat(p -> p.status() == PaymentStatus.CAPTURED
+                            && p.capturedAmount().equals(usd("100.00"))));
+        }
+
+        @Test
+        void captured_whileStillAuthorizationPending_authorizesThenCaptures() {
+            // The auto-capture case: the synchronous authorize response was lost, but Stripe did
+            // process it, immediate capture included — payment_intent.succeeded arrives first.
+            PaymentId id = PaymentId.newId();
+            Payment payment = paymentIn(id, PaymentStatus.AUTHORIZATION_PENDING, usd("0.00"), usd("0.00"));
+            GatewayWebhookEvent event = new GatewayWebhookEvent(
+                    REFERENCE, GatewayWebhookEvent.Type.CAPTURED, usd("100.00"), "evt_2", "succeeded", null);
             arrange(payment, event);
 
             service.process(command());
@@ -161,7 +223,7 @@ class ProcessWebhookServiceTest {
             PaymentId id = PaymentId.newId();
             Payment payment = paymentIn(id, PaymentStatus.CAPTURED, usd("100.00"), usd("0.00"));
             GatewayWebhookEvent event = new GatewayWebhookEvent(
-                    REFERENCE, GatewayWebhookEvent.Type.REFUNDED, usd("25.00"), "evt_4", "refunded");
+                    REFERENCE, GatewayWebhookEvent.Type.REFUNDED, usd("25.00"), "evt_4", "refunded", null);
             arrange(payment, event);
 
             service.process(command());
@@ -175,8 +237,8 @@ class ProcessWebhookServiceTest {
         void refunded_withNoAmount_refundsTheFullCapturedBalance() {
             PaymentId id = PaymentId.newId();
             Payment payment = paymentIn(id, PaymentStatus.CAPTURED, usd("100.00"), usd("0.00"));
-            GatewayWebhookEvent event =
-                    new GatewayWebhookEvent(REFERENCE, GatewayWebhookEvent.Type.REFUNDED, null, "evt_5", "refunded");
+            GatewayWebhookEvent event = new GatewayWebhookEvent(
+                    REFERENCE, GatewayWebhookEvent.Type.REFUNDED, null, "evt_5", "refunded", null);
             arrange(payment, event);
 
             service.process(command());
@@ -187,11 +249,28 @@ class ProcessWebhookServiceTest {
         }
 
         @Test
+        void refunded_confirmsOurOwnInFlightRefundAttempt() {
+            PaymentId id = PaymentId.newId();
+            Payment payment = paymentIn(id, PaymentStatus.REFUND_PENDING, usd("100.00"), usd("0.00"));
+            GatewayWebhookEvent event = new GatewayWebhookEvent(
+                    REFERENCE, GatewayWebhookEvent.Type.REFUNDED, usd("999.00"), "evt_4", "succeeded", null);
+            arrange(payment, event);
+
+            service.process(command());
+
+            // resolveRefundPending() applies the amount recorded at beginRefundAttempt() time (40.00),
+            // not whatever the event happens to carry — the event only confirms the attempt succeeded.
+            verify(paymentRepository)
+                    .save(argThat(p -> p.status() == PaymentStatus.PARTIALLY_REFUNDED
+                            && p.refundedAmount().equals(usd("40.00"))));
+        }
+
+        @Test
         void voided_releasesAnAuthorizedPayment() {
             PaymentId id = PaymentId.newId();
             Payment payment = paymentIn(id, PaymentStatus.AUTHORIZED, usd("0.00"), usd("0.00"));
-            GatewayWebhookEvent event =
-                    new GatewayWebhookEvent(REFERENCE, GatewayWebhookEvent.Type.VOIDED, null, "evt_6", "voided");
+            GatewayWebhookEvent event = new GatewayWebhookEvent(
+                    REFERENCE, GatewayWebhookEvent.Type.VOIDED, null, "evt_6", "voided", null);
             arrange(payment, event);
 
             service.process(command());
@@ -204,7 +283,7 @@ class ProcessWebhookServiceTest {
             PaymentId id = PaymentId.newId();
             Payment payment = paymentIn(id, PaymentStatus.CREATED, usd("0.00"), usd("0.00"));
             GatewayWebhookEvent event = new GatewayWebhookEvent(
-                    REFERENCE, GatewayWebhookEvent.Type.FAILED, null, "evt_7", "issuer_rejected");
+                    REFERENCE, GatewayWebhookEvent.Type.FAILED, null, "evt_7", "issuer_rejected", null);
             arrange(payment, event);
 
             service.process(command());
@@ -221,8 +300,8 @@ class ProcessWebhookServiceTest {
         // Already AUTHORIZED: re-applying an AUTHORIZED webhook must be a no-op, not an error, since
         // providers redeliver webhooks freely.
         Payment payment = paymentIn(id, PaymentStatus.AUTHORIZED, usd("0.00"), usd("0.00"));
-        GatewayWebhookEvent event =
-                new GatewayWebhookEvent(REFERENCE, GatewayWebhookEvent.Type.AUTHORIZED, null, "evt_1", "authorized");
+        GatewayWebhookEvent event = new GatewayWebhookEvent(
+                REFERENCE, GatewayWebhookEvent.Type.AUTHORIZED, null, "evt_1", "authorized", null);
         when(gateway.parseWebhook(any(), any())).thenReturn(Optional.of(event));
         when(paymentRepository.findByProviderReference(ProviderType.STRIPE, REFERENCE)).thenReturn(Optional.of(payment));
 

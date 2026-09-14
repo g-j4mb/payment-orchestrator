@@ -1,8 +1,8 @@
 package com.j4mb.payment_orchestrator.payments.infrastructure.adapter.out.gateway.mock;
 
-import com.j4mb.payment_orchestrator.payments.application.command.AuthorizePaymentCommand;
 import com.j4mb.payment_orchestrator.payments.application.port.out.PaymentGatewayPort;
 import com.j4mb.payment_orchestrator.payments.domain.model.Payment;
+import com.j4mb.payment_orchestrator.payments.domain.vo.CaptureMode;
 import com.j4mb.payment_orchestrator.payments.domain.vo.Money;
 import com.j4mb.payment_orchestrator.payments.domain.vo.ProviderReference;
 import com.j4mb.payment_orchestrator.payments.domain.vo.ProviderType;
@@ -79,7 +79,7 @@ public class MockPaymentGatewayAdapter implements PaymentGatewayPort {
 
     @Override
     public GatewayAuthorization authorize(
-            Payment payment, String paymentMethodToken, AuthorizePaymentCommand.CaptureMode captureMode) {
+            Payment payment, String paymentMethodToken, CaptureMode captureMode) {
         simulateLatency();
         String token = paymentMethodToken == null ? "" : paymentMethodToken.toLowerCase(Locale.ROOT);
 
@@ -95,7 +95,7 @@ public class MockPaymentGatewayAdapter implements PaymentGatewayPort {
         }
 
         ProviderReference reference = newReference();
-        boolean captured = captureMode == AuthorizePaymentCommand.CaptureMode.AUTOMATIC;
+        boolean captured = captureMode == CaptureMode.AUTOMATIC;
         log.info(
                 "Mock {} authorized payment {} as {} ({})",
                 provider,
@@ -133,11 +133,13 @@ public class MockPaymentGatewayAdapter implements PaymentGatewayPort {
      * Parses a webhook body with <b>no signature verification</b>, so notifications can be replayed
      * by hand with plain {@code curl}.
      *
-     * <p>Expected body — {@code amount} and {@code currency} are optional, and when omitted the use
-     * case applies the full remaining capturable or refundable amount:
+     * <p>Expected body — {@code amount}, {@code currency}, and {@code local_payment_id} are optional,
+     * and when omitted the use case applies the full remaining capturable or refundable amount (and,
+     * for {@code local_payment_id}, falls back to correlating by {@code reference} alone):
      *
      * <pre>{@code
-     * {"reference": "mock_stripe_1a2b3c4d", "type": "CAPTURED", "amount": "49.99", "currency": "USD"}
+     * {"reference": "mock_stripe_1a2b3c4d", "type": "CAPTURED", "amount": "49.99", "currency": "USD",
+     *  "local_payment_id": "b6e2..."}
      * }</pre>
      *
      * <p>Real adapters must verify the provider's signature over the raw body here and throw
@@ -166,7 +168,12 @@ public class MockPaymentGatewayAdapter implements PaymentGatewayPort {
 
         log.info("Mock {} webhook: {} for {}", provider, eventType, reference);
         return Optional.of(new GatewayWebhookEvent(
-                new ProviderReference(reference), eventType, amountOf(body), "mock_" + UUID.randomUUID(), "mock"));
+                new ProviderReference(reference),
+                eventType,
+                amountOf(body),
+                "mock_" + UUID.randomUUID(),
+                "mock",
+                body.path("local_payment_id").asString(null)));
     }
 
     /** Returns null when the body carries no amount — the use case reads that as "the full amount". */

@@ -23,6 +23,7 @@ import com.j4mb.payment_orchestrator.payments.application.port.out.PaymentReposi
 import com.j4mb.payment_orchestrator.payments.domain.exception.InvalidPaymentStateTransitionException;
 import com.j4mb.payment_orchestrator.payments.domain.model.Payment;
 import com.j4mb.payment_orchestrator.payments.domain.model.PaymentId;
+import com.j4mb.payment_orchestrator.payments.domain.vo.CaptureMode;
 import com.j4mb.payment_orchestrator.payments.domain.vo.IdempotencyKey;
 import com.j4mb.payment_orchestrator.payments.domain.vo.Money;
 import com.j4mb.payment_orchestrator.payments.domain.vo.PaymentStatus;
@@ -46,19 +47,44 @@ class VoidPaymentServiceTest {
         return Money.of(new BigDecimal(amount), "USD");
     }
 
-    private static Payment authorizedPayment(PaymentId id) {
-        Payment payment = Payment.rehydrate(
+    private static Payment rehydrate(
+            PaymentId id,
+            ProviderReference reference,
+            Money authorizedAmount,
+            Money capturedAmount,
+            Money refundedAmount,
+            PaymentStatus status,
+            IdempotencyKey key) {
+        return Payment.rehydrate(
                 id,
                 ProviderType.STRIPE,
+                reference,
+                authorizedAmount,
+                capturedAmount,
+                refundedAmount,
+                status,
+                key,
+                "tok_visa",
+                CaptureMode.MANUAL,
+                null,
+                0,
+                null,
+                null,
+                null,
+                null,
+                NOW,
+                NOW);
+    }
+
+    private static Payment authorizedPayment(PaymentId id) {
+        Payment payment = rehydrate(
+                id,
                 new ProviderReference("pi_123"),
                 usd("100.00"),
                 usd("0.00"),
                 usd("0.00"),
                 PaymentStatus.AUTHORIZED,
-                new IdempotencyKey("original-key-" + id),
-                null,
-                NOW,
-                NOW);
+                new IdempotencyKey("original-key-" + id));
         payment.pullDomainEvents();
         return payment;
     }
@@ -121,18 +147,14 @@ class VoidPaymentServiceTest {
         @Test
         void paymentNotInAVoidableStatus_abandonsTheKeyWithoutCallingTheGateway() {
             PaymentId id = PaymentId.newId();
-            Payment alreadyCaptured = Payment.rehydrate(
+            Payment alreadyCaptured = rehydrate(
                     id,
-                    ProviderType.STRIPE,
                     new ProviderReference("pi_123"),
                     usd("100.00"),
                     usd("100.00"),
                     usd("0.00"),
                     PaymentStatus.CAPTURED,
-                    new IdempotencyKey("original-key-" + id),
-                    null,
-                    NOW,
-                    NOW);
+                    new IdempotencyKey("original-key-" + id));
             when(paymentRepository.findByIdForUpdate(id)).thenReturn(Optional.of(alreadyCaptured));
             VoidPaymentCommand cmd = command(id);
 
@@ -180,18 +202,14 @@ class VoidPaymentServiceTest {
         @Test
         void previouslyCompletedVoid_returnsItWithoutCallingTheGatewayAgain() {
             PaymentId id = PaymentId.newId();
-            Payment voided = Payment.rehydrate(
+            Payment voided = rehydrate(
                     id,
-                    ProviderType.STRIPE,
                     new ProviderReference("pi_123"),
                     usd("100.00"),
                     usd("0.00"),
                     usd("0.00"),
                     PaymentStatus.VOIDED,
-                    new IdempotencyKey("original-key-" + id),
-                    null,
-                    NOW,
-                    NOW);
+                    new IdempotencyKey("original-key-" + id));
             when(idempotencyCheck.claim(any(), anyString())).thenReturn(Optional.of(id));
             when(paymentRepository.findById(id)).thenReturn(Optional.of(voided));
             VoidPaymentCommand cmd = command(id);

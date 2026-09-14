@@ -9,13 +9,16 @@ import com.j4mb.payment_orchestrator.payments.application.port.out.DomainEventPu
 import com.j4mb.payment_orchestrator.payments.application.port.out.PaymentGatewayPort;
 import com.j4mb.payment_orchestrator.payments.application.port.out.PaymentRepositoryPort;
 import com.j4mb.payment_orchestrator.payments.domain.model.Payment;
-import com.j4mb.payment_orchestrator.payments.domain.vo.IdempotencyKey;
 import com.j4mb.payment_orchestrator.payments.domain.vo.PaymentStatus;
 import java.time.Clock;
 import java.time.Instant;
 import java.util.Optional;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionTemplate;
 
 /**
  * Authorizes a payment at the chosen provider, capturing immediately when the caller asked for a
@@ -24,6 +27,7 @@ import org.springframework.transaction.annotation.Transactional;
 @Service
 public class AuthorizePaymentService implements AuthorizePaymentUseCase {
 
+    private static final Logger log = LoggerFactory.getLogger(AuthorizePaymentService.class);
     private static final String OPERATION = "authorize";
 
     private final PaymentRepositoryPort paymentRepository;
@@ -32,17 +36,27 @@ public class AuthorizePaymentService implements AuthorizePaymentUseCase {
     private final DomainEventPublisherPort eventPublisher;
     private final Clock clock;
 
+    /**
+     * Commits the pre-call pending checkpoint independently of the surrounding transaction — see
+     * {@link #authorize}. Self-invoking a local {@code @Transactional} method is not proxied, so this
+     * uses the same {@code TransactionTemplate} approach as {@code IdempotencyStoreAdapter}.
+     */
+    private final TransactionTemplate requiresNewTransaction;
+
     public AuthorizePaymentService(
             PaymentRepositoryPort paymentRepository,
             PaymentGatewayResolver gatewayResolver,
             IdempotencyCheckService idempotencyCheck,
             DomainEventPublisherPort eventPublisher,
-            Clock clock) {
+            Clock clock,
+            PlatformTransactionManager transactionManager) {
         this.paymentRepository = paymentRepository;
         this.gatewayResolver = gatewayResolver;
         this.idempotencyCheck = idempotencyCheck;
         this.eventPublisher = eventPublisher;
         this.clock = clock;
+        this.requiresNewTransaction = new TransactionTemplate(transactionManager);
+        this.requiresNewTransaction.setPropagationBehavior(TransactionTemplate.PROPAGATION_REQUIRES_NEW);
     }
 
     /**
@@ -75,35 +89,54 @@ public class AuthorizePaymentService implements AuthorizePaymentUseCase {
         }
 
         Instant now = clock.instant();
-        Payment payment = Payment.initiate(command.provider(), command.amount(), command.idempotencyKey(), now);
-        PaymentGatewayPort gateway = gatewayResolver.resolve(command.provider());
+        Payment payment = Payment.initiate(
+                command.provider(),
+                command.amount(),
+                command.idempotencyKey(),
+                command.paymentMethodToken(),
+                command.captureMode(),
+                now);
+        payment.markAuthorizationPending(now);
 
+        // Committed in its own transaction before the provider is ever called — survives a crash
+        // mid-call, which a reactive "persist only after the exception" approach would not. The
+        // client's idempotency key is completed here too, not after the gateway resolves: if the
+        // process dies before the call even starts, a retry correctly sees "pending" instead of
+        // racing a second attempt, and reconciliation makes the (still unattempted) call later.
+        Payment checkpointed = requiresNewTransaction.execute(status -> {
+            Payment saved = paymentRepository.save(payment);
+            idempotencyCheck.complete(command.idempotencyKey(), saved.id());
+            eventPublisher.publishAll(payment.pullDomainEvents());
+            return saved;
+        });
+
+        PaymentGatewayPort gateway = gatewayResolver.resolve(command.provider());
         PaymentGatewayPort.GatewayAuthorization authorization;
         try {
-            authorization = gateway.authorize(payment, command.paymentMethodToken(), command.captureMode());
+            authorization = gateway.authorize(checkpointed, command.paymentMethodToken(), command.captureMode());
         } catch (RuntimeException ex) {
-            idempotencyCheck.abandon(command.idempotencyKey());
-            throw ex;
+            log.warn(
+                    "{} authorize call for {} did not complete; remains pending for reconciliation",
+                    command.provider(),
+                    checkpointed.id(),
+                    ex);
+            return PaymentResult.from(checkpointed);
         }
 
         if (!authorization.successful()) {
             // Recorded, not discarded: see the noRollbackFor note on this method.
-            payment.markFailed(authorization.failureReason(), clock.instant());
-            persist(payment, command.idempotencyKey());
-            throw new PaymentDeclinedException(payment.id(), authorization.failureReason());
+            checkpointed.markFailed(authorization.failureReason(), clock.instant());
+            Payment saved = paymentRepository.save(checkpointed);
+            eventPublisher.publishAll(checkpointed.pullDomainEvents());
+            throw new PaymentDeclinedException(checkpointed.id(), authorization.failureReason());
         }
 
-        payment.markAuthorized(authorization.reference(), clock.instant());
+        checkpointed.markAuthorized(authorization.reference(), clock.instant());
         if (authorization.captured()) {
-            payment.capture(payment.authorizedAmount(), clock.instant());
+            checkpointed.capture(checkpointed.authorizedAmount(), clock.instant());
         }
-        return PaymentResult.from(persist(payment, command.idempotencyKey()));
-    }
-
-    private Payment persist(Payment payment, IdempotencyKey key) {
-        Payment saved = paymentRepository.save(payment);
-        idempotencyCheck.complete(key, saved.id());
-        eventPublisher.publishAll(payment.pullDomainEvents());
-        return saved;
+        Payment saved = paymentRepository.save(checkpointed);
+        eventPublisher.publishAll(checkpointed.pullDomainEvents());
+        return PaymentResult.from(saved);
     }
 }

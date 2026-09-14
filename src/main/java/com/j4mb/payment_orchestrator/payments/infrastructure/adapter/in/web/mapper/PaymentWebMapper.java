@@ -6,6 +6,7 @@ import com.j4mb.payment_orchestrator.payments.application.command.RefundPaymentC
 import com.j4mb.payment_orchestrator.payments.application.command.VoidPaymentCommand;
 import com.j4mb.payment_orchestrator.payments.application.dto.PaymentResult;
 import com.j4mb.payment_orchestrator.payments.domain.model.PaymentId;
+import com.j4mb.payment_orchestrator.payments.domain.vo.CaptureMode;
 import com.j4mb.payment_orchestrator.payments.domain.vo.IdempotencyKey;
 import com.j4mb.payment_orchestrator.payments.domain.vo.Money;
 import com.j4mb.payment_orchestrator.payments.domain.vo.ProviderType;
@@ -79,12 +80,12 @@ public class PaymentWebMapper {
         return Optional.ofNullable(amount).map(value -> new Money(value, currency));
     }
 
-    private AuthorizePaymentCommand.CaptureMode parseCaptureMode(String value) {
+    private CaptureMode parseCaptureMode(String value) {
         if (value == null || value.isBlank()) {
-            return AuthorizePaymentCommand.CaptureMode.MANUAL;
+            return CaptureMode.MANUAL;
         }
         try {
-            return AuthorizePaymentCommand.CaptureMode.valueOf(value.trim().toUpperCase(Locale.ROOT));
+            return CaptureMode.valueOf(value.trim().toUpperCase(Locale.ROOT));
         } catch (IllegalArgumentException ex) {
             throw new IllegalArgumentException("captureMode must be AUTOMATIC or MANUAL, got: " + value, ex);
         }

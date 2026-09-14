@@ -25,6 +25,7 @@ import com.j4mb.payment_orchestrator.payments.domain.exception.InvalidRefundAmou
 import com.j4mb.payment_orchestrator.payments.domain.model.Payment;
 import com.j4mb.payment_orchestrator.payments.domain.model.PaymentId;
 import com.j4mb.payment_orchestrator.payments.domain.service.RefundPolicy;
+import com.j4mb.payment_orchestrator.payments.domain.vo.CaptureMode;
 import com.j4mb.payment_orchestrator.payments.domain.vo.IdempotencyKey;
 import com.j4mb.payment_orchestrator.payments.domain.vo.Money;
 import com.j4mb.payment_orchestrator.payments.domain.vo.PaymentStatus;
@@ -38,6 +39,8 @@ import java.util.Optional;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.TransactionStatus;
 
 class RefundPaymentServiceTest {
 
@@ -48,19 +51,45 @@ class RefundPaymentServiceTest {
         return Money.of(new BigDecimal(amount), "USD");
     }
 
-    private static Payment capturedPayment(PaymentId id) {
-        Payment payment = Payment.rehydrate(
+    private static Payment rehydrate(
+            PaymentId id,
+            ProviderReference reference,
+            Money authorizedAmount,
+            Money capturedAmount,
+            Money refundedAmount,
+            PaymentStatus status,
+            IdempotencyKey key) {
+        boolean refundPending = status == PaymentStatus.REFUND_PENDING;
+        return Payment.rehydrate(
                 id,
                 ProviderType.STRIPE,
+                reference,
+                authorizedAmount,
+                capturedAmount,
+                refundedAmount,
+                status,
+                key,
+                "tok_visa",
+                CaptureMode.MANUAL,
+                null,
+                0,
+                refundPending ? NOW : null,
+                refundPending ? capturedAmount.minus(refundedAmount) : null,
+                refundPending ? "customer_request" : null,
+                refundPending ? "prior-attempt" : null,
+                NOW,
+                NOW);
+    }
+
+    private static Payment capturedPayment(PaymentId id) {
+        Payment payment = rehydrate(
+                id,
                 new ProviderReference("pi_123"),
                 usd("100.00"),
                 usd("100.00"),
                 usd("0.00"),
                 PaymentStatus.CAPTURED,
-                new IdempotencyKey("original-key-" + id),
-                null,
-                NOW,
-                NOW);
+                new IdempotencyKey("original-key-" + id));
         payment.pullDomainEvents();
         return payment;
     }
@@ -75,7 +104,15 @@ class RefundPaymentServiceTest {
     private IdempotencyCheckService idempotencyCheck;
     private DomainEventPublisherPort eventPublisher;
     private PaymentGatewayPort gateway;
+    private PlatformTransactionManager transactionManager;
     private RefundPaymentService service;
+
+    /**
+     * Snapshots the status at each {@code save} call as it happens: {@code Payment} is mutable and
+     * the mock echoes back the same reference every time, so asserting on a captured argument after
+     * the fact would only ever see its final state, not what it was at each individual save.
+     */
+    private final java.util.List<PaymentStatus> savedStatuses = new java.util.ArrayList<>();
 
     @BeforeEach
     void setUp() {
@@ -84,16 +121,42 @@ class RefundPaymentServiceTest {
         idempotencyCheck = mock(IdempotencyCheckService.class);
         eventPublisher = mock(DomainEventPublisherPort.class);
         gateway = mock(PaymentGatewayPort.class);
+        transactionManager = mock(PlatformTransactionManager.class);
+        when(transactionManager.getTransaction(any())).thenReturn(mock(TransactionStatus.class));
         service = new RefundPaymentService(
-                paymentRepository, gatewayResolver, idempotencyCheck, eventPublisher, new RefundPolicy(), CLOCK);
+                paymentRepository,
+                gatewayResolver,
+                idempotencyCheck,
+                eventPublisher,
+                new RefundPolicy(),
+                CLOCK,
+                transactionManager);
 
         when(gatewayResolver.resolve(any())).thenReturn(gateway);
-        when(paymentRepository.save(any(Payment.class))).thenAnswer(invocation -> invocation.getArgument(0));
+        when(paymentRepository.save(any(Payment.class))).thenAnswer(invocation -> {
+            Payment payment = invocation.getArgument(0);
+            savedStatuses.add(payment.status());
+            return payment;
+        });
         when(idempotencyCheck.claim(any(), anyString())).thenReturn(Optional.empty());
     }
 
     @Nested
     class FreshRequest {
+
+        @Test
+        void checkpointsAsRefundPending_beforeEverCallingTheGateway() {
+            PaymentId id = PaymentId.newId();
+            Payment payment = capturedPayment(id);
+            when(paymentRepository.findByIdForUpdate(id)).thenReturn(Optional.of(payment));
+            when(gateway.refund(any(), any(), any())).thenReturn(GatewayOperation.succeeded("refunded"));
+            RefundPaymentCommand cmd = command(id, Optional.empty());
+
+            service.refund(cmd);
+
+            assertThat(savedStatuses).containsExactly(PaymentStatus.REFUND_PENDING, PaymentStatus.REFUNDED);
+            verify(idempotencyCheck).complete(eq(cmd.idempotencyKey()), any());
+        }
 
         @Test
         void noAmountGiven_refundsTheFullCapturedBalance() {
@@ -109,7 +172,7 @@ class RefundPaymentServiceTest {
             assertThat(result.status()).isEqualTo(PaymentStatus.REFUNDED);
             assertThat(result.refundedAmount()).isEqualTo(usd("100.00"));
             verify(idempotencyCheck).complete(eq(cmd.idempotencyKey()), any());
-            verify(eventPublisher).publishAll(argThat(events -> !events.isEmpty()));
+            verify(eventPublisher, org.mockito.Mockito.atLeastOnce()).publishAll(argThat(events -> !events.isEmpty()));
         }
 
         @Test
@@ -154,18 +217,14 @@ class RefundPaymentServiceTest {
         @Test
         void paymentNotInARefundableStatus_abandonsTheKeyWithoutCallingTheGateway() {
             PaymentId id = PaymentId.newId();
-            Payment authorizedOnly = Payment.rehydrate(
+            Payment authorizedOnly = rehydrate(
                     id,
-                    ProviderType.STRIPE,
                     new ProviderReference("pi_123"),
                     usd("100.00"),
                     usd("0.00"),
                     usd("0.00"),
                     PaymentStatus.AUTHORIZED,
-                    new IdempotencyKey("original-key-" + id),
-                    null,
-                    NOW,
-                    NOW);
+                    new IdempotencyKey("original-key-" + id));
             when(paymentRepository.findByIdForUpdate(id)).thenReturn(Optional.of(authorizedOnly));
             RefundPaymentCommand cmd = command(id, Optional.of(usd("10.00")));
 
@@ -176,7 +235,7 @@ class RefundPaymentServiceTest {
         }
 
         @Test
-        void declinedByProvider_abandonsTheKeyWithoutPersisting() {
+        void declinedByProvider_cancelsThePendingAttemptAndFreesTheKey() {
             PaymentId id = PaymentId.newId();
             Payment payment = capturedPayment(id);
             when(paymentRepository.findByIdForUpdate(id)).thenReturn(Optional.of(payment));
@@ -187,22 +246,27 @@ class RefundPaymentServiceTest {
                     .isInstanceOf(PaymentDeclinedException.class)
                     .hasMessageContaining("already_refunded");
 
+            // A clean decline is definitive, not ambiguous: the pending attempt is reverted and the
+            // client's key is freed so a retry starts a genuinely new attempt.
+            verify(idempotencyCheck).complete(eq(cmd.idempotencyKey()), any());
             verify(idempotencyCheck).abandon(cmd.idempotencyKey());
-            verify(paymentRepository, never()).save(any());
+            assertThat(savedStatuses).containsExactly(PaymentStatus.REFUND_PENDING, PaymentStatus.CAPTURED);
         }
 
         @Test
-        void gatewayUnreachable_abandonsTheKeyAndPropagatesWithoutPersisting() {
+        void gatewayUnreachable_leavesPaymentCheckpointedAsPendingWithoutThrowing() {
             PaymentId id = PaymentId.newId();
             Payment payment = capturedPayment(id);
             when(paymentRepository.findByIdForUpdate(id)).thenReturn(Optional.of(payment));
             when(gateway.refund(any(), any(), any())).thenThrow(new IllegalStateException("mock gateway unreachable"));
             RefundPaymentCommand cmd = command(id, Optional.empty());
 
-            assertThatThrownBy(() -> service.refund(cmd)).isInstanceOf(IllegalStateException.class);
+            PaymentResult result = service.refund(cmd);
 
-            verify(idempotencyCheck).abandon(cmd.idempotencyKey());
-            verify(paymentRepository, never()).save(any());
+            assertThat(result.status()).isEqualTo(PaymentStatus.REFUND_PENDING);
+            verify(paymentRepository).save(argThat(p -> p.status() == PaymentStatus.REFUND_PENDING));
+            verify(idempotencyCheck).complete(eq(cmd.idempotencyKey()), any());
+            verify(idempotencyCheck, never()).abandon(any());
         }
     }
 
@@ -212,18 +276,14 @@ class RefundPaymentServiceTest {
         @Test
         void previouslyCompletedRefund_returnsItWithoutCallingTheGatewayAgain() {
             PaymentId id = PaymentId.newId();
-            Payment refunded = Payment.rehydrate(
+            Payment refunded = rehydrate(
                     id,
-                    ProviderType.STRIPE,
                     new ProviderReference("pi_123"),
                     usd("100.00"),
                     usd("100.00"),
                     usd("100.00"),
                     PaymentStatus.REFUNDED,
-                    new IdempotencyKey("original-key-" + id),
-                    null,
-                    NOW,
-                    NOW);
+                    new IdempotencyKey("original-key-" + id));
             when(idempotencyCheck.claim(any(), anyString())).thenReturn(Optional.of(id));
             when(paymentRepository.findById(id)).thenReturn(Optional.of(refunded));
             RefundPaymentCommand cmd = command(id, Optional.empty());
@@ -231,6 +291,29 @@ class RefundPaymentServiceTest {
             PaymentResult result = service.refund(cmd);
 
             assertThat(result.status()).isEqualTo(PaymentStatus.REFUNDED);
+            verifyNoInteractions(gatewayResolver, gateway);
+            verify(paymentRepository, never()).findByIdForUpdate(any());
+            verify(paymentRepository, never()).save(any());
+        }
+
+        @Test
+        void stillRefundPending_returnsItWithoutCallingTheGatewayAgain() {
+            PaymentId id = PaymentId.newId();
+            Payment pending = rehydrate(
+                    id,
+                    new ProviderReference("pi_123"),
+                    usd("100.00"),
+                    usd("100.00"),
+                    usd("0.00"),
+                    PaymentStatus.REFUND_PENDING,
+                    new IdempotencyKey("original-key-" + id));
+            when(idempotencyCheck.claim(any(), anyString())).thenReturn(Optional.of(id));
+            when(paymentRepository.findById(id)).thenReturn(Optional.of(pending));
+            RefundPaymentCommand cmd = command(id, Optional.empty());
+
+            PaymentResult result = service.refund(cmd);
+
+            assertThat(result.status()).isEqualTo(PaymentStatus.REFUND_PENDING);
             verifyNoInteractions(gatewayResolver, gateway);
             verify(paymentRepository, never()).findByIdForUpdate(any());
             verify(paymentRepository, never()).save(any());

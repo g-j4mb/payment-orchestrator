@@ -1,9 +1,9 @@
 package com.j4mb.payment_orchestrator.payments.infrastructure.adapter.out.gateway.adyen;
 
-import com.j4mb.payment_orchestrator.payments.application.command.AuthorizePaymentCommand;
 import com.j4mb.payment_orchestrator.payments.application.exception.ProviderNotImplementedException;
 import com.j4mb.payment_orchestrator.payments.application.port.out.PaymentGatewayPort;
 import com.j4mb.payment_orchestrator.payments.domain.model.Payment;
+import com.j4mb.payment_orchestrator.payments.domain.vo.CaptureMode;
 import com.j4mb.payment_orchestrator.payments.domain.vo.Money;
 import com.j4mb.payment_orchestrator.payments.domain.vo.ProviderType;
 import java.util.Map;
@@ -35,7 +35,7 @@ public class AdyenPaymentGatewayAdapter implements PaymentGatewayPort {
 
     @Override
     public GatewayAuthorization authorize(
-            Payment payment, String paymentMethodToken, AuthorizePaymentCommand.CaptureMode captureMode) {
+            Payment payment, String paymentMethodToken, CaptureMode captureMode) {
         throw new ProviderNotImplementedException(provider(), "authorize");
     }
 
