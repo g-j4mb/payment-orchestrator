@@ -6,6 +6,18 @@ mid-call leaves a resolvable record instead of a lost payment. This traces one r
 `POST /api/v1/payments` through to final resolution, including the two independent paths — a
 webhook and a backstop job — that close out a call whose outcome never came back synchronously.
 
+**This is a server-side confirmation flow, not Stripe's client-side one.** The `Client` node below
+is this API's own caller (e.g. a checkout backend or a thin frontend), not the end user's browser
+talking to Stripe. Card collection happens upstream of this diagram: the caller tokenizes the card
+into a Stripe `PaymentMethod` via Stripe.js/Elements (raw card data never reaches this service) and
+sends that token — `paymentMethodToken` below — to `POST /api/v1/payments`. From there, this
+service creates *and* confirms the `PaymentIntent` with Stripe in one server-to-server call
+(`setConfirm(true)`); there is no `client_secret` handed back and no client-side
+`stripe.confirmPayment()` anywhere in this flow. The consequence: a card that comes back
+`requires_action` (3D Secure / SCA) has nowhere to redirect to, so `StripeGatewayAdapter` reports it
+through the same path as `card declined` below — it is not a true decline, just a flow this adapter
+does not yet support.
+
 ```mermaid
 sequenceDiagram
     autonumber
@@ -64,9 +76,10 @@ sequenceDiagram
             Svc->>Bus: publishAll(events)
             Svc-->>API: PaymentResult
             API-->>Client: 201 Created
-        else card declined
-            Stripe-->>GW: 402, decline code
+        else card declined, or requires_action (3DS/SCA — no redirect support)
+            Stripe-->>GW: 402 decline, or 200 requires_action
             GW-->>Svc: declined
+            note right of GW: requires_action has no card decline code —<br/>reported as declined since this adapter cannot<br/>drive a redirect-based challenge
             Svc->>Pay: markFailed(reason)
             Svc->>Repo: save(payment)<br/>status is FAILED
             Svc->>Bus: publishAll(PaymentFailed)

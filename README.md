@@ -1,6 +1,6 @@
 # Payment Orchestrator
 
-> A production-grade payment orchestration platform built with Java and Spring Boot that provides a unified API for integrating multiple payment providers.
+> A payment orchestration platform built with Java and Spring Boot, demonstrating clean provider abstraction behind a unified API for integrating multiple payment providers.
 
 Payment Orchestrator abstracts provider-specific implementations behind a common interface, enabling applications to process payments through a consistent API without being tightly coupled to any single payment provider.
 
@@ -87,6 +87,14 @@ provider's response never comes back synchronously, see the
 Stripe is fully implemented — authorize, capture, refund, and void, webhook signature verification
 with metadata-based correlation, a Resilience4j circuit breaker, and crash-safe reconciliation for
 outbound calls whose outcome never comes back synchronously.
+
+Authorization confirms **server-side**: the client tokenizes the card into a Stripe `PaymentMethod`
+(so raw card data never reaches this backend), sends that token to `POST /api/v1/payments`, and the
+backend creates *and* confirms the `PaymentIntent` with Stripe in one call — there is no client-side
+`stripe.confirmPayment()` step and no `client_secret` involved. The tradeoff: cards that come back
+`requires_action` (3D Secure / SCA) aren't supported by this flow and are currently reported as a
+decline rather than driving a redirect-based challenge. See the
+[authorization sequence diagram](docs/diagrams/authorize-sequence.md) for the full picture.
 
 Adyen and Checkout.com are wired and resolvable through the gateway port, but their provider calls
 are still stubs. Having all three in place from the start is deliberate — it keeps the port designed
@@ -244,6 +252,7 @@ No domain or application code changes.
 
 * [x] Hexagonal / DDD project structure with enforced boundaries
 * [x] Stripe Integration
+* [ ] 3D Secure / SCA support (client-side confirmation flow)
 * [ ] Adyen Integration
 * [ ] Checkout.com Integration
 * [ ] Payment Dashboard
