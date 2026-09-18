@@ -283,6 +283,8 @@ Swagger UI
 http://localhost:8080/swagger-ui.html
 ```
 
+![Swagger UI](docs/screenshots/swagger-ui.png)
+
 ---
 
 ## Future Enhancements
