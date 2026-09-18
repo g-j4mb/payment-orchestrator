@@ -151,6 +151,14 @@ The architecture is designed to support additional providers with minimal implem
 POST /api/v1/payments
 ```
 
+Request, via Swagger UI (mock gateway, so no real Stripe call is made):
+
+![Create payment request](docs/screenshots/create-payment-request.png)
+
+Response — `AUTOMATIC` capture mode authorizes and captures in one step:
+
+![Create payment response](docs/screenshots/create-payment-response.png)
+
 ### Capture Payment
 
 ```http
